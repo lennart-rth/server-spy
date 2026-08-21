@@ -82,12 +82,28 @@ type_slow() {
     done
 }
 
+# wait until the pane shows some expected text (so keystrokes are never
+# swallowed by a shell/TUI that is still starting up)
+wait_for_text() {
+    pattern="$1"
+    i=0
+    while [ "$i" -lt 40 ]; do
+        if tmux capture-pane -t rec -p 2>/dev/null | grep -qF "$pattern"; then
+            return 0
+        fi
+        sleep 0.25
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # the command line
-sleep 0.3
+wait_for_text '$' || echo "record-demo: shell prompt not seen" >&2
 type_slow "server-spy"
 sleep 0.1
 tmux send-keys -t rec Enter
-sleep 2.5
+wait_for_text "Worker Filter" || echo "record-demo: TUI did not appear" >&2
+sleep 0.5
 
 # no filter yet — define it right away in the popup
 tmux send-keys -t rec 'f'
