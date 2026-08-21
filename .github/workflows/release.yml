@@ -111,7 +111,6 @@ jobs:
         with:
           name: rpm-${{ matrix.target }}
           path: dist-rpm/*.rpm
-          path: dist/*.rpm
 
   release:
     name: publish release
