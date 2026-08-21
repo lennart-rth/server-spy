@@ -51,6 +51,8 @@ def main():
                 s += b
             queries += 1
             touched += n
+        if rng.random() < 0.12:
+            time.sleep(rng.uniform(0.05, 0.5))
         if elapsed - last_io >= io_interval:
             payload = os.urandom(8192)
             result.write(

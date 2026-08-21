@@ -1243,13 +1243,14 @@ fn draw_psi(f: &mut Frame, app: &mut App, area: Rect) {
     let g = rows[0];
     if let Some(s) = &app.snapshot {
         let items = [
-            ("cpu", s.psi_pct.cpu_some, Color::Cyan),
-            ("mem", s.psi_pct.mem_some, Color::Magenta),
-            ("io", s.psi_pct.io_some, Color::Blue),
-            ("wait sys", s.sys_wait.unwrap_or(0.0), Color::Green),
+            ("cpu pressure", s.psi_pct.cpu_some, Color::Cyan),
+            ("mem pressure", s.psi_pct.mem_some, Color::Magenta),
+            ("io pressure", s.psi_pct.io_some, Color::Blue),
+            ("sched wait", s.sys_wait.unwrap_or(0.0), Color::Green),
         ];
+        let label_w = items.iter().map(|(l, _, _)| l.len()).max().unwrap_or(8);
         for (i, (label, cur, color)) in items.iter().enumerate() {
-            let line = gauge_line(label, *cur, *color, g.width);
+            let line = gauge_line(label, *cur, *color, g.width, label_w);
             f.render_widget(Paragraph::new(line), Rect::new(g.x, g.y + i as u16, g.width, 1));
         }
     }
@@ -1266,7 +1267,7 @@ fn draw_psi(f: &mut Frame, app: &mut App, area: Rect) {
     );
     let colors = [Color::Cyan, Color::Magenta, Color::Blue, Color::Green];
     let data = [&app.hist_cpu, &app.hist_mem, &app.hist_io, &app.hist_wait];
-    let titles = ["cpu", "mem", "io", "wait sys"];
+    let titles = ["cpu pressure", "mem pressure", "io pressure", "sched wait"];
     for i in 0..4 {
         let color = colors[i];
         let d: Vec<u64> = data[i].iter().copied().collect();
@@ -1290,7 +1291,7 @@ fn draw_util(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let block = Block::bordered().title(" Resource utilization ");
+    let block = Block::bordered().title(" Live Resource utilization ");
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(s) = &app.snapshot else {
@@ -1306,7 +1307,7 @@ fn draw_util(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Min(0),
     ])
     .split(inner);
-    let titles = ["cpu", "mem", "io"];
+    let titles = ["cpu%", "mem%", "io%"];
     let bars = [
         &[(s.share_cpu[0], Color::Green), (s.share_cpu[1], Color::Red)][..],
         &[(s.share_mem[0], Color::Green), (s.share_mem[1], Color::Red)][..],
@@ -1351,18 +1352,22 @@ fn bar_fill(segs: &[(f64, Color)], width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-fn gauge_line(label: &str, cur: f64, color: Color, width: u16) -> Line<'static> {
-    let bar_w = (width as i64 - 30).max(8) as f64;
+fn gauge_line(label: &str, cur: f64, color: Color, width: u16, label_w: usize) -> Line<'static> {
+    let bar_w = (width as i64 - label_w as i64 - 11).max(4) as f64;
     let mut fill = (bar_w * (cur / 100.0).clamp(0.0, 1.0).sqrt()).round() as usize;
     if cur > 0.0 && fill == 0 {
         fill = 1;
     }
     let empty = bar_w as usize - fill;
+    let pct = fmt_pct(cur);
     vec![
         Span::styled("█".repeat(fill), Style::default().fg(color)),
         Span::styled("█".repeat(empty), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {label} "), Style::default().fg(color).bold()),
-        Span::styled(fmt_pct(cur), Style::default().fg(color).bold()),
+        Span::styled(
+            format!(" {label:<label_w$} "),
+            Style::default().fg(color).bold(),
+        ),
+        Span::styled(format!("{pct:>8}"), Style::default().fg(color).bold()),
     ]
     .into()
 }
@@ -1419,8 +1424,8 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sorted: Vec<&RunRow> = s.runs.iter().collect();
     sort_runs(&mut sorted, app.runs_sort);
     let mut headers: Vec<String> = [
-        "params", "wall", "cpu", "wait%", "cpu%", "rss", "psi-cpu", "psi-mem", "psi-io",
-        "state",
+        "params", "wall", "cpu", "wait%", "cpu%", "rss", "max. user", "psi-c", "psi-m",
+        "psi-i", "state",
     ]
     .iter()
     .map(|h| h.to_string())
@@ -1451,6 +1456,16 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
                 }),
                 Cell::from(Span::raw(fmt_pct(r.cpu_pct))),
                 Cell::from(Span::raw(fmt_bytes(r.rss))),
+                Cell::from(Span::styled(
+                    r.users.to_string(),
+                    if r.users >= 3 {
+                        Style::default().fg(Color::Yellow)
+                    } else if r.users > 0 {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                )),
                 Cell::from(Span::styled(fmt_pct(r.psi[0]), Style::default().fg(sev(r.psi[0])))),
                 Cell::from(Span::styled(fmt_pct(r.psi[1]), Style::default().fg(sev(r.psi[1])))),
                 Cell::from(Span::styled(fmt_pct(r.psi[2]), Style::default().fg(sev(r.psi[2])))),
@@ -1459,16 +1474,17 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let widths = [
-        Constraint::Min(48),
+        Constraint::Min(26),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
         Constraint::Length(7),
+        Constraint::Length(11),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
         Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
     ];
     let table = Table::new(rows, widths).header(header);
     f.render_widget(table, table_area);
@@ -1680,8 +1696,8 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
-const RUNS_FIXED: [u16; 9] = [7, 7, 7, 7, 8, 8, 8, 8, 8];
-const USERS_FIXED: [u16; 7] = [9, 8, 8, 8, 5, 7, 6];
+const RUNS_FIXED: [u16; 10] = [6, 6, 6, 6, 7, 11, 6, 6, 6, 7];
+const USERS_FIXED: [u16; 7] = [9, 8, 8, 8, 7, 8, 7];
 const ANTS_FIXED: [u16; 6] = [3, 8, 12, 9, 8, 8];
 
 fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> Ordering {
@@ -1702,9 +1718,10 @@ fn sort_runs(rows: &mut Vec<&RunRow>, (col, asc): (usize, bool)) {
             3 => cmp_opt_f64(a.wait_pct, b.wait_pct),
             4 => a.cpu_pct.total_cmp(&b.cpu_pct),
             5 => a.rss.cmp(&b.rss),
-            6 => a.psi[0].total_cmp(&b.psi[0]),
-            7 => a.psi[1].total_cmp(&b.psi[1]),
-            8 => a.psi[2].total_cmp(&b.psi[2]),
+            6 => a.users.cmp(&b.users),
+            7 => a.psi[0].total_cmp(&b.psi[0]),
+            8 => a.psi[1].total_cmp(&b.psi[1]),
+            9 => a.psi[2].total_cmp(&b.psi[2]),
             _ => a.alive.cmp(&b.alive),
         };
         if asc {
@@ -1796,6 +1813,7 @@ mod tests {
             psi: [psi, 0.0, 0.0],
             alive: false,
             order: 0,
+            users: 0,
         }
     }
 
@@ -1825,7 +1843,7 @@ mod tests {
         let a = run(Some(1.0), 1.0);
         let b = run(Some(1.0), 9.0);
         let mut rows = vec![&a, &b];
-        sort_runs(&mut rows, (6, false));
+        sort_runs(&mut rows, (7, false));
         assert_eq!(rows[0].psi[0], 9.0);
     }
 
@@ -1835,7 +1853,7 @@ mod tests {
         assert_eq!(col_at(11, &area, &RUNS_FIXED, 0), Some(0));
         let wall_start = 10 + (100 - 77); // params min width
         assert_eq!(col_at(wall_start + 2, &area, &RUNS_FIXED, 0), Some(1));
-        assert_eq!(col_at(10 + 99, &area, &RUNS_FIXED, 0), Some(9));
+        assert_eq!(col_at(10 + 99, &area, &RUNS_FIXED, 0), Some(10));
         assert_eq!(col_at(5, &area, &RUNS_FIXED, 0), None);
     }
 

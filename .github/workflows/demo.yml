@@ -1,0 +1,46 @@
+name: demo
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    name: record demo cast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y tmux asciinema python3
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Record the demo
+        env:
+          ANT_ARGS: "--cpu 6 --mem 1200 --io 400"
+        run: demo/record-demo.sh
+      - name: Commit the new cast
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add site/demo.cast site/index.html
+            git commit -m "demo: refresh recorded cast"
+            git push origin HEAD:${GITHUB_REF_NAME}
+            echo "changed=1" >> "$GITHUB_ENV"
+          else
+            echo "demo: cast unchanged"
+          fi
+      - name: Trigger site deploy
+        if: env.changed == '1'
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pages.yml/dispatches" \
+            -d '{"ref":"'${{ github.ref_name }}'"}'

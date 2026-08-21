@@ -57,10 +57,10 @@ pub fn save_snapshot(s: &Snapshot, path: &str) -> io::Result<()> {
     out.push('\n');
 
     out.push_str("# runs\n");
-    out.push_str("params,wall_s,cpu_s,wait_s,wait%,cpu%,rss_b,psi_cpu%,psi_mem%,psi_io%,state\n");
+    out.push_str("params,wall_s,cpu_s,wait_s,wait%,cpu%,rss_b,users,psi_cpu%,psi_mem%,psi_io%,state\n");
     for r in &s.runs {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv(&r.params),
             fs(r.wall),
             fs(r.cpu_secs),
@@ -68,6 +68,7 @@ pub fn save_snapshot(s: &Snapshot, path: &str) -> io::Result<()> {
             opt_f(r.wait_pct),
             f(r.cpu_pct),
             r.rss,
+            r.users,
             f(r.psi[0]),
             f(r.psi[1]),
             f(r.psi[2]),
@@ -177,12 +178,13 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
                         wait_pct: opt_f_inv(cells[4].as_str()),
                         cpu_pct: cell_f(&cells, 5),
                         rss: cell_u(&cells, 6),
+                        users: cells.get(7).and_then(|c| c.parse().ok()).unwrap_or(0),
                         psi: [
-                            cell_f(&cells, 7),
                             cell_f(&cells, 8),
                             cell_f(&cells, 9),
+                            cell_f(&cells, 10),
                         ],
-                        alive: cells[10] == "alive",
+                        alive: cells[11].as_str() == "alive",
                         order,
                     });
                 }
@@ -470,6 +472,7 @@ mod tests {
             psi: [1.23, 0.45, 2.1],
             alive: true,
             order: 1,
+            users: 3,
         });
         s.users.push(UserShare {
             user: "lennart".into(),

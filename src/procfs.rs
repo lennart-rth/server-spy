@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -126,6 +126,7 @@ pub struct ProcStat {
     pub stime: u64,
     pub starttime: u64,
     pub rss: u64,
+    pub tty: u64,
 }
 
 pub fn parse_stat(line: &str) -> Option<ProcStat> {
@@ -144,6 +145,7 @@ pub fn parse_stat(line: &str) -> Option<ProcStat> {
         stime: rest[12].parse().ok()?,
         starttime: rest[19].parse().ok()?,
         rss: rest[21].parse().ok()?,
+        tty: rest[4].parse().ok()?,
     })
 }
 
@@ -217,6 +219,18 @@ pub fn read_comm(pid: i32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// Whether the process carries the demo-agent marker in its environment and,
+/// if so, under which fake username it should appear. Used by demo mode to
+/// simulate "other users" on a shared server.
+pub fn read_demo_user(pid: i32) -> Option<String> {
+    fs::read(format!("/proc/{pid}/environ")).ok().and_then(|b| {
+        b.split(|&c| c == 0).find_map(|e| {
+            let e = String::from_utf8_lossy(e);
+            e.strip_prefix("SERVER_SPY_DEMO_USER=").map(|v| v.to_string())
+        })
+    })
+}
+
 pub fn boot_secs() -> f64 {
     let data = fs::read_to_string("/proc/stat").unwrap_or_default();
     data.lines()
@@ -254,6 +268,41 @@ pub fn username(uid: u32) -> String {
     map.get(&uid).cloned().unwrap_or_else(|| uid.to_string())
 }
 
+/// Whether the uid belongs to a human user: system/service users (docker,
+/// avahi, gdm, ...) sit below uid 1000 or have no login shell, so both
+/// checks are combined.
+pub fn is_human_uid(uid: u32) -> bool {
+    static CACHE: OnceLock<HashSet<u32>> = OnceLock::new();
+    let human = CACHE.get_or_init(|| {
+        let mut set = HashSet::new();
+        if let Ok(data) = fs::read_to_string("/etc/passwd") {
+            for line in data.lines() {
+                let fields: Vec<&str> = line.split(':').collect();
+                if fields.len() < 7 {
+                    continue;
+                }
+                let id: u32 = match fields[2].parse() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if id >= 1000 && is_login_shell(fields[6]) {
+                    set.insert(id);
+                }
+            }
+        }
+        set
+    });
+    human.contains(&uid)
+}
+
+fn is_login_shell(shell: &str) -> bool {
+    let base = shell.rsplit('/').next().unwrap_or(shell);
+    !matches!(
+        base,
+        "" | "nologin" | "false" | "true" | "sync" | "halt" | "shutdown"
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct Process {
     pub pid: i32,
@@ -264,14 +313,18 @@ pub struct Process {
     pub ticks: u64,
     pub rss: u64,
     pub start_secs: f64,
+    pub demo_user: String,
+    pub tty: u64,
 }
 
 /// Per-pid data that does not change for the lifetime of a process, cached
 /// across polls to avoid re-reading /proc files that would return the same
 /// bytes. Pid reuse is detected via the monotonic `starttime`.
 pub struct ScanCache {
-    /// uid, tgid, starttime (in clock ticks)
-    meta: HashMap<i32, (u32, i32, u64)>,
+    /// uid, tgid, starttime (in clock ticks), demo-agent flag
+    meta: HashMap<i32, (u32, i32, u64, bool)>,
+    /// fake username of demo agents (only set for demo processes)
+    demo_user: HashMap<i32, String>,
     cmdline: HashMap<i32, (Vec<String>, u64)>,
     poll: u64,
 }
@@ -285,9 +338,20 @@ impl ScanCache {
     pub fn new() -> Self {
         Self {
             meta: HashMap::new(),
+            demo_user: HashMap::new(),
             cmdline: HashMap::new(),
             poll: 0,
         }
+    }
+
+    /// Whether the given pid was marked as a demo agent in the last scan.
+    pub fn is_demo_agent(&self, pid: i32) -> bool {
+        self.demo_user.contains_key(&pid)
+    }
+
+    /// The fake username of a demo agent, if it is one.
+    pub fn demo_user(&self, pid: i32) -> Option<&str> {
+        self.demo_user.get(&pid).map(|s| s.as_str())
     }
 }
 
@@ -297,7 +361,7 @@ impl Default for ScanCache {
     }
 }
 
-pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache) -> Vec<Process> {
+pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache, demo: bool) -> Vec<Process> {
     let mut out = Vec::new();
     cache.poll = cache.poll.wrapping_add(1);
     let Ok(dir) = fs::read_dir("/proc") else {
@@ -324,20 +388,31 @@ pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache) -> Vec<Pr
         let reused = cache
             .meta
             .get(&pid)
-            .map(|(_, _, start)| st.starttime < *start)
+            .map(|(_, _, start, _)| st.starttime < *start)
             .unwrap_or(true);
-        let (uid, tgid) = if reused {
+        let (uid, tgid, _agent) = if reused {
             let (uid, tgid) = fs::read_to_string(path.join("status"))
                 .ok()
                 .map(|d| parse_status_uid_tgid(&d))
                 .unwrap_or((None, None));
             let uid = uid.unwrap_or(0);
             let tgid = tgid.unwrap_or(pid);
-            cache.meta.insert(pid, (uid, tgid, st.starttime));
-            (uid, tgid)
+            let demo_user = if demo {
+                read_demo_user(pid).filter(|n| !n.is_empty())
+            } else {
+                None
+            };
+            let agent = demo_user.is_some();
+            if let Some(n) = demo_user {
+                cache.demo_user.insert(pid, n);
+            } else {
+                cache.demo_user.remove(&pid);
+            }
+            cache.meta.insert(pid, (uid, tgid, st.starttime, agent));
+            (uid, tgid, agent)
         } else {
-            let (uid, tgid, _) = cache.meta[&pid];
-            (uid, tgid)
+            let (uid, tgid, _, agent) = cache.meta[&pid];
+            (uid, tgid, agent)
         };
         if tgid != pid {
             continue;
@@ -369,10 +444,13 @@ pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache) -> Vec<Pr
             ticks: st.utime + st.stime,
             rss: st.rss * sys.page_size,
             start_secs: boot + st.starttime as f64 / sys.clk_tck as f64,
+            demo_user: cache.demo_user.get(&pid).cloned().unwrap_or_default(),
+            tty: st.tty,
         });
     }
     let alive: std::collections::HashSet<i32> = out.iter().map(|p| p.pid).collect();
     cache.meta.retain(|pid, _| alive.contains(pid));
+    cache.demo_user.retain(|pid, _| alive.contains(pid));
     cache.cmdline.retain(|pid, _| alive.contains(pid));
     out
 }

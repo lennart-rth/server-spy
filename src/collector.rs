@@ -12,6 +12,7 @@ pub struct Control {
     regex: AtomicBool,
     stealth: Mutex<String>,
     peer: AtomicI32,
+    demo: AtomicBool,
     generation: AtomicU64,
 }
 
@@ -22,6 +23,7 @@ impl Control {
             regex: AtomicBool::new(false),
             stealth: Mutex::new(String::new()),
             peer: AtomicI32::new(-1),
+            demo: AtomicBool::new(std::env::var("SERVER_SPY_DEMO").is_ok()),
             generation: AtomicU64::new(1),
         }
     }
@@ -56,6 +58,10 @@ impl Control {
     pub fn get_peer(&self) -> i32 {
         self.peer.load(Ordering::SeqCst)
     }
+
+    pub fn get_demo(&self) -> bool {
+        self.demo.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +92,7 @@ pub struct RunRow {
     pub psi: [f64; 3],
     pub alive: bool,
     pub order: u64,
+    pub users: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +175,7 @@ struct RunState {
     ticks: u64,
     rss: u64,
     order: u64,
+    users_max: usize,
 }
 
 pub struct Collector {
@@ -247,12 +255,14 @@ impl Collector {
 
         let psi = procfs::read_psi();
         let (mem_total, mem_avail) = procfs::meminfo();
-        let procs = procfs::scan_processes(&self.sys, self.boot, &mut self.scan_cache);
+        let demo = self.control.get_demo();
+        let procs = procfs::scan_processes(&self.sys, self.boot, &mut self.scan_cache, demo);
         if let Some(shared) = &self.shared_procs {
             *shared.lock().unwrap() = procs.clone();
         }
         let stealth = self.control.get_stealth();
         let peer = self.control.get_peer();
+        let demo = self.control.get_demo();
         let self_pid = std::process::id() as i32;
         let vis: Vec<&Process> = procs
             .iter()
@@ -263,7 +273,6 @@ impl Collector {
             })
             .collect();
         let by_pid: HashMap<i32, &Process> = procs.iter().map(|p| (p.pid, p)).collect();
-
         let mut adjacency: HashMap<i32, Vec<i32>> = HashMap::new();
         for p in &procs {
             adjacency.entry(p.ppid).or_default().push(p.pid);
@@ -413,6 +422,7 @@ impl Collector {
                         ticks: 0,
                         rss: 0,
                         order: self.run_order,
+                        users_max: 0,
                     },
                 );
             }
@@ -463,6 +473,33 @@ impl Collector {
         let mem_others = (used_mem.saturating_sub(tree_rss) as f64 / mem_total_f * 100.0).max(0.0);
         let mem_free = mem_avail as f64 / mem_total_f * 100.0;
 
+        // how many other human users are actively present right now: logged
+        // in (have a controlling tty) or actually running stuff (CPU ticks
+        // this interval). Must run before pid_last is refreshed below.
+        let euid = unsafe { libc::geteuid() };
+        let mut active_users: HashSet<String> = HashSet::new();
+        for p in &procs {
+            if tree.contains(&p.pid) || p.pid == self_pid || p.pid == peer {
+                continue;
+            }
+            if p.tty == 0 && delta_ticks(&self.pid_last, p.pid, p.ticks) == 0 {
+                continue;
+            }
+            if demo {
+                if !p.demo_user.is_empty() {
+                    active_users.insert(p.demo_user.clone());
+                }
+            } else if p.uid != euid && procfs::is_human_uid(p.uid) {
+                active_users.insert(p.uid.to_string());
+            }
+        }
+        let active_count = active_users.len();
+        for e in self.runs.values_mut() {
+            if e.users_max < active_count {
+                e.users_max = active_count;
+            }
+        }
+
         let mut rows: Vec<RunRow> = self.finalized.clone();
         for e in self.runs.values() {
             let wall = (now_wall - e.start).max(0.0);
@@ -501,15 +538,24 @@ impl Collector {
             }
         }
 
-        let euid = unsafe { libc::geteuid() };
         let mut ants: Vec<Antag> = Vec::new();
         for (pid, a) in &self.pid_accum {
             if tree.contains(pid) || a.owned || *pid == self_pid || *pid == peer {
                 continue;
             }
+            if demo && !self.scan_cache.is_demo_agent(*pid) {
+                continue;
+            }
             ants.push(Antag {
                 pid: *pid,
-                user: a.user.clone(),
+                user: if demo {
+                    self.scan_cache
+                        .demo_user(*pid)
+                        .unwrap_or_default()
+                        .to_string()
+                } else {
+                    a.user.clone()
+                },
                 comm: a.comm.clone(),
                 cmdline: a.cmdline.clone(),
                 cpu_secs: a.ticks as f64 / hz as f64,
@@ -527,11 +573,22 @@ impl Collector {
                 || a.owned
                 || *pid == self_pid
                 || *pid == peer
-                || a.uid == euid
+                || (!demo && a.uid == euid)
             {
                 continue;
             }
-            let e = by_user.entry(a.user.clone()).or_default();
+            if demo && !self.scan_cache.is_demo_agent(*pid) {
+                continue;
+            }
+            let name = if demo {
+                self.scan_cache
+                    .demo_user(*pid)
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                a.user.clone()
+            };
+            let e = by_user.entry(name).or_default();
             e.0 += a.ticks as f64 / hz as f64;
             e.1 += a.wait_ns as f64 / 1e9;
             e.2 += a.rss_peak;
@@ -564,23 +621,13 @@ impl Collector {
             TargetStatus::Active(matched.len())
         };
 
-        for p in &procs {
-            let sched = sched_map.get(&p.pid).copied();
-            self.pid_last.insert(
-                p.pid,
-                PidLast {
-                    ticks: p.ticks,
-                    sched,
-                },
-            );
-        }
-        self.pid_last.retain(|pid, _| by_pid.contains_key(pid));
-
         let rss_total: u64 = procs.iter().map(|p| p.rss).sum();
 
         let mut g_sched: HashMap<i32, (u64, u64)> = HashMap::new();
         let mut g_wait = 0u64;
         let mut g_cpu = 0u64;
+        // NOTE: pid_last must still hold the previous poll's ticks here, so
+        // the "did this process run?" check compares against the last poll.
         if let Some(last) = &self.g_sched_last {
             for p in &procs {
                 let ran = !self.pid_last.contains_key(&p.pid)
@@ -611,6 +658,18 @@ impl Collector {
         }
         self.g_sched_last = Some(g_sched);
         let sys_wait = wait_overhead_pct(g_wait, g_cpu);
+
+        for p in &procs {
+            let sched = sched_map.get(&p.pid).copied();
+            self.pid_last.insert(
+                p.pid,
+                PidLast {
+                    ticks: p.ticks,
+                    sched,
+                },
+            );
+        }
+        self.pid_last.retain(|pid, _| by_pid.contains_key(pid));
 
         self.seq += 1;
         self.history.push_back([
@@ -670,6 +729,7 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
             psi: [psi_c, psi_m, psi_i],
             alive: !e.roots.is_empty(),
             order: e.order,
+            users: e.users_max,
         }
 }
 
@@ -766,7 +826,7 @@ fn short_token(t: &str) -> String {
     }
 }
 
-fn fmt_cmdline(cmdline: &[String]) -> String {
+pub(crate) fn fmt_cmdline(cmdline: &[String]) -> String {
     let mut out = Vec::new();
     for t in cmdline {
         let s = short_token(t);
@@ -834,6 +894,8 @@ mod tests {
             ticks: 0,
             rss: 0,
             start_secs: 0.0,
+            demo_user: String::new(),
+            tty: 0,
         }
     }
 
@@ -1000,11 +1062,12 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
             None => "—".to_string(),
         };
         out.push_str(&format!(
-            "  {st} wall {}  cpu {}  wait {wait}  cpu% {}  rss {}  psi[c {} m {} i {}]  pids {:?}  {}\n",
+            "  {st} wall {}  cpu {}  wait {wait}  cpu% {}  rss {}  users {}  psi[c {} m {} i {}]  pids {:?}  {}\n",
             fmt_secs(r.wall),
             fmt_secs(r.cpu_secs),
             fmt_pct(r.cpu_pct),
             fmt_bytes(r.rss),
+            r.users,
             fmt_pct(r.psi[0]),
             fmt_pct(r.psi[1]),
             fmt_pct(r.psi[2]),

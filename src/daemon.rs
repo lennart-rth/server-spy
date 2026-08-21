@@ -444,6 +444,7 @@ fn compute_preview(
     let my_exe = exe_name();
     let stealth = control.get_stealth();
     let peer = control.get_peer();
+    let demo = control.get_demo();
     let re = if regex {
         regex::Regex::new(filter).ok()
     } else {
@@ -454,6 +455,9 @@ fn compute_preview(
         if p.pid == peer || crate::collector::is_stealth(p, &stealth) {
             continue;
         }
+        if demo && p.demo_user.is_empty() {
+            continue;
+        }
         let hit = match &re {
             Some(re) => crate::collector::matches_regex(p, re, &my_exe),
             None => crate::collector::matches_name(p, filter, &my_exe),
@@ -461,9 +465,13 @@ fn compute_preview(
         if hit {
             out.push(MatchInfo {
                 pid: p.pid,
-                user: crate::procfs::username(p.uid),
+                user: if demo {
+                    p.demo_user.clone()
+                } else {
+                    crate::procfs::username(p.uid)
+                },
                 comm: p.comm.clone(),
-                cmdline: p.cmdline.join(" "),
+                cmdline: crate::collector::fmt_cmdline(&p.cmdline),
             });
         }
     }
@@ -487,6 +495,8 @@ mod tests {
             ticks: 0,
             rss: 0,
             start_secs: 0.0,
+            demo_user: String::new(),
+            tty: 0,
         }
     }
 

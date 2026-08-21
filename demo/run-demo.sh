@@ -1,24 +1,28 @@
 #!/bin/sh
-# server-spy demo: realistic experiment runs (bench_ann.py) plus noisy
-# antagonists. Run as root/sudo to simulate the antagonists running as
-# another user (they appear under "Other users" in the TUI).
+# server-spy demo: a believable shared-server scenario.
+#   - realistic experiment runs (bench_ann.py), two at a time, endlessly
+#   - fluctuating antagonists disguised as common CS workloads; alice is the
+#     heavy user, with periodic CPU surges that wreck unlucky runs
+#   - SERVER_SPY_DEMO=1 makes the TUI show the antagonists under fake
+#     usernames ("other users") and hides everything owned by the real user
 set -e
 cd "$(dirname "$0")"
 mkdir -p /tmp/server-spy-demo
 chmod 777 /tmp/server-spy-demo
-ANT_ARGS=${ANT_ARGS:---cpu 14 --mem 14000 --io 2000}
+ANT_ARGS=${ANT_ARGS:---cpu 24 --mem 6000 --io 1500}
 SPY=${SPY:-../target/release/server-spy}
 
-if [ "$(id -u)" = "0" ]; then
-    echo "running antagonists as user 'nobody' (simulates other users on the box)"
-    setpriv --reuid=nobody --regid=nogroup --clear-groups \
-        python3 antagonists.py $ANT_ARGS >/dev/null 2>&1 &
-else
-    echo "note: run with sudo so the antagonists appear as a different user"
-    python3 antagonists.py $ANT_ARGS >/dev/null 2>&1 &
-fi
+export SERVER_SPY_DEMO=1
+# the experiment owner — so the filter preview shows our workers properly
+export SERVER_SPY_DEMO_USER=${SERVER_SPY_DEMO_USER:-eve}
+
+python3 antagonists.py $ANT_ARGS >/dev/null 2>&1 &
 ANTS=$!
-./runner.py >/dev/null 2>&1 &
+# endless stream of experiment runs, two at a time
+while :; do
+    ./runner.py >/dev/null 2>&1
+    sleep 2
+done &
 RUNNER=$!
 cleanup() {
     set +e
