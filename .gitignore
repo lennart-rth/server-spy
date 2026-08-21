@@ -6,3 +6,6 @@
 # already existing elements were commented out
 
 #/target
+
+# perf profiling dumps
+perf.data*
