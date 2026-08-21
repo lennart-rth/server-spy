@@ -97,20 +97,48 @@ jobs:
         env:
           APT_GPG_KEY: ${{ secrets.APT_GPG_KEY }}
         run: |
-          if [ -z "$APT_GPG_KEY" ]; then
-            echo "no APT_GPG_KEY secret configured — publishing unsigned"
-            exit 0
+          set -e
+          if [ -n "$APT_GPG_KEY" ]; then
+            if echo "$APT_GPG_KEY" | gpg --batch --yes --import 2>&1 &&
+               gpg --batch --yes --armor --detach-sign \
+                 -o stage/dists/stable/Release.gpg stage/dists/stable/Release 2>&1 &&
+               gpg --batch --yes --clearsign \
+                 -o stage/dists/stable/InRelease stage/dists/stable/Release 2>&1; then
+              gpg --batch --yes --armor --export > stage/server-spy.gpg.key
+              echo "release signed with the configured key"
+              exit 0
+            fi
+            echo "configured APT_GPG_KEY is unusable (see errors above) — generating a fresh key" >&2
+          else
+            echo "no APT_GPG_KEY secret — generating a fresh key" >&2
           fi
-          if ! (echo "$APT_GPG_KEY" | gpg --batch --yes --import 2>/dev/null &&
-                gpg --batch --yes --armor --detach-sign \
-                  -o stage/dists/stable/Release.gpg stage/dists/stable/Release &&
-                gpg --batch --yes --clearsign \
-                  -o stage/dists/stable/InRelease stage/dists/stable/Release); then
-            echo "signing failed (key unusable?) — publishing unsigned"
-            exit 0
-          fi
+          # bootstrap: create a no-passphrase key, sign with it and expose the
+          # private key so it can be stored in the APT_GPG_KEY secret once
+          rm -rf "$HOME/.gnupg"
+          printf '%s\n' \
+            '%no-protection' \
+            'Key-Type: eddsa' \
+            'Key-Curve: ed25519' \
+            'Key-Usage: sign' \
+            'Name-Real: server-spy apt repo' \
+            'Name-Email: lennart-rth@users.noreply.github.com' \
+            'Expire-Date: 0' \
+            | gpg --batch --gen-key
+          gpg --batch --yes --armor --detach-sign \
+            -o stage/dists/stable/Release.gpg stage/dists/stable/Release
+          gpg --batch --yes --clearsign \
+            -o stage/dists/stable/InRelease stage/dists/stable/Release
           gpg --batch --yes --armor --export > stage/server-spy.gpg.key
-          echo "release signed"
+          gpg --batch --yes --armor --export-secret-keys "server-spy apt repo" \
+            > stage/server-spy-private.gpg.key
+          echo "release signed with a freshly generated key"
+      - name: Upload fresh signing key (one-time secret setup)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: apt-gpg-key-fresh
+          path: stage/server-spy-private.gpg.key
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v5
         with:
           name: apt-repo
