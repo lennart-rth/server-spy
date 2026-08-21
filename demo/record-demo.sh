@@ -76,7 +76,8 @@ type_slow() {
     i=0
     while [ "$i" -lt "$len" ]; do
         tmux send-keys -t rec "$(printf '%s' "$string" | cut -c$((i+1)))"
-        sleep "0.0$(($RANDOM % 2 + 1))"
+        # POSIX-safe random 0.01-0.02 s per keystroke (no bash $RANDOM in CI)
+        sleep "0.0$(($(od -An -N1 -tu1 /dev/urandom) % 2 + 1))"
         i=$((i + 1))
     done
 }

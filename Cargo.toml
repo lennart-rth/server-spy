@@ -1,6 +1,6 @@
 [package]
 name = "server-spy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "System congestion tracker for shared servers: watch what your experiment processes get vs what the rest of the machine consumes"
 license = "MIT"

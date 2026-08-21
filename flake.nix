@@ -14,7 +14,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "server-spy";
-          version = "0.1.0";
+          version = "0.1.1";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           meta = {
@@ -28,7 +28,7 @@
 
         checks.test = pkgs.rustPlatform.buildRustPackage {
           pname = "server-spy-tests";
-          version = "0.1.0";
+          version = "0.1.1";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           installPhase = "mkdir -p $out";
