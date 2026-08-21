@@ -31,11 +31,11 @@ jobs:
       - name: Install lld (x86_64 musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y lld
-      - name: Install musl cross tools (aarch64 musl)
+      - name: Install musl tools (aarch64 musl)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-musl
-          printf '\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-musl-gcc"\n' >> .cargo/config.toml
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          printf '\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-musl-gcc"\nrustflags = ["-C", "target-feature=+crt-static"]\n' >> .cargo/config.toml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
