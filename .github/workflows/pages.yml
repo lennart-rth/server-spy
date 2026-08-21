@@ -38,7 +38,7 @@ jobs:
         include:
           - arch: amd64
             target: x86_64-unknown-linux-gnu
-            os: ubuntu-20.04
+            os: ubuntu-22.04
           - arch: arm64
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -48,7 +48,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Install cargo-deb
-        run: cargo install cargo-deb --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
       - name: Build .deb
         run: cargo deb --no-strip --target ${{ matrix.target }}
       - name: Stage package
@@ -63,7 +65,7 @@ jobs:
   apt:
     name: assemble apt repository
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: deb
     steps:
       - uses: actions/download-artifact@v4

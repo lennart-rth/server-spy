@@ -19,9 +19,9 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-20.04
+            os: ubuntu-22.04
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-20.04
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
           - target: aarch64-unknown-linux-musl
@@ -59,7 +59,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-20.04
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     needs: build
@@ -69,7 +69,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Install cargo-deb
-        run: cargo install cargo-deb --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
       - name: Build .deb
         run: cargo deb --no-strip --target ${{ matrix.target }}
       - name: Collect
@@ -86,7 +88,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-20.04
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     needs: build
@@ -96,7 +98,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Install cargo-generate-rpm
-        run: cargo install cargo-generate-rpm --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-generate-rpm
       - name: Build .rpm
         run: cargo generate-rpm --target ${{ matrix.target }}
       - name: Collect
