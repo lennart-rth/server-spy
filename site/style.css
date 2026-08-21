@@ -238,8 +238,8 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
 }
 .one-liner #install-cmd-text {
     flex: 1;
-    overflow-x: auto;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 .copy-btn {
     flex-shrink: 0;

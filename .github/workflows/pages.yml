@@ -15,7 +15,7 @@ jobs:
     name: site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Assemble site files
         run: |
           mkdir -p stage
@@ -23,7 +23,7 @@ jobs:
           cp install.sh stage/install.sh
           cp install-apt.sh stage/install-apt.sh
           touch stage/.nojekyll
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: site
           path: stage/
@@ -43,7 +43,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -55,7 +55,7 @@ jobs:
         run: |
           mkdir -p stage/pool/main/s/server-spy
           cp target/${{ matrix.target }}/debian/*.deb stage/pool/main/s/server-spy/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: apt-${{ matrix.arch }}
           path: stage/
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: deb
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: stage
           merge-multiple: true
@@ -102,7 +102,7 @@ jobs:
           gpg --batch --yes --clearsign \
             -o stage/dists/stable/InRelease stage/dists/stable/Release
           gpg --batch --yes --armor --export > stage/server-spy.gpg.key
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: apt-repo
           path: stage/
@@ -113,14 +113,14 @@ jobs:
     needs: [site, apt]
     if: always() && needs.site.result == 'success' && (needs.apt.result == 'success' || needs.apt.result == 'skipped')
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           path: stage
           merge-multiple: true
       - name: Download apt repo
         if: needs.apt.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: apt-repo
           path: stage
