@@ -65,6 +65,8 @@ jobs:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     needs: deb
+    env:
+      APT_GPG_KEY: ${{ secrets.APT_GPG_KEY }}
     steps:
       - uses: actions/download-artifact@v5
         with:
@@ -93,8 +95,6 @@ jobs:
             release stage/dists/stable > stage/dists/stable/Release
       - name: Sign Release (when APT_GPG_KEY secret is set)
         if: env.APT_GPG_KEY != ''
-        env:
-          APT_GPG_KEY: ${{ secrets.APT_GPG_KEY }}
         run: |
           echo "$APT_GPG_KEY" | gpg --batch --yes --import
           gpg --batch --yes --armor --detach-sign \
