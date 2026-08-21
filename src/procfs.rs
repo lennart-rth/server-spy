@@ -125,6 +125,7 @@ pub struct ProcStat {
     pub utime: u64,
     pub stime: u64,
     pub starttime: u64,
+    pub rss: u64,
 }
 
 pub fn parse_stat(line: &str) -> Option<ProcStat> {
@@ -132,7 +133,7 @@ pub fn parse_stat(line: &str) -> Option<ProcStat> {
     let close = line.rfind(')')?;
     let comm = &line[open + 1..close];
     let rest: Vec<&str> = line[close + 2..].split_whitespace().collect();
-    if rest.len() < 21 {
+    if rest.len() < 22 {
         return None;
     }
     Some(ProcStat {
@@ -142,6 +143,7 @@ pub fn parse_stat(line: &str) -> Option<ProcStat> {
         utime: rest[11].parse().ok()?,
         stime: rest[12].parse().ok()?,
         starttime: rest[19].parse().ok()?,
+        rss: rest[21].parse().ok()?,
     })
 }
 
@@ -215,15 +217,6 @@ pub fn read_comm(pid: i32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-pub fn read_statm_rss(pid: i32, page_size: u64) -> u64 {
-    let path = format!("/proc/{pid}/statm");
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()))
-        .map(|pages| pages * page_size)
-        .unwrap_or(0)
-}
-
 pub fn boot_secs() -> f64 {
     let data = fs::read_to_string("/proc/stat").unwrap_or_default();
     data.lines()
@@ -273,8 +266,40 @@ pub struct Process {
     pub start_secs: f64,
 }
 
-pub fn scan_processes(sys: &SysInfo, boot: f64) -> Vec<Process> {
+/// Per-pid data that does not change for the lifetime of a process, cached
+/// across polls to avoid re-reading /proc files that would return the same
+/// bytes. Pid reuse is detected via the monotonic `starttime`.
+pub struct ScanCache {
+    /// uid, tgid, starttime (in clock ticks)
+    meta: HashMap<i32, (u32, i32, u64)>,
+    cmdline: HashMap<i32, (Vec<String>, u64)>,
+    poll: u64,
+}
+
+/// How many polls pass before a cached cmdline is re-read (staggered, so each
+/// poll only refreshes 1/PERIOD of the processes). Exec'd processes are seen
+/// within this many polls; freshly spawned pids are always read immediately.
+const CMDLINE_REFRESH_PERIOD: u64 = 8;
+
+impl ScanCache {
+    pub fn new() -> Self {
+        Self {
+            meta: HashMap::new(),
+            cmdline: HashMap::new(),
+            poll: 0,
+        }
+    }
+}
+
+impl Default for ScanCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache) -> Vec<Process> {
     let mut out = Vec::new();
+    cache.poll = cache.poll.wrapping_add(1);
     let Ok(dir) = fs::read_dir("/proc") else {
         return out;
     };
@@ -296,31 +321,59 @@ pub fn scan_processes(sys: &SysInfo, boot: f64) -> Vec<Process> {
         if st.state == 'Z' || st.state == 'X' {
             continue;
         }
-        let Ok(status_data) = fs::read_to_string(path.join("status")) else {
-            continue;
+        let reused = cache
+            .meta
+            .get(&pid)
+            .map(|(_, _, start)| st.starttime < *start)
+            .unwrap_or(true);
+        let (uid, tgid) = if reused {
+            let (uid, tgid) = fs::read_to_string(path.join("status"))
+                .ok()
+                .map(|d| parse_status_uid_tgid(&d))
+                .unwrap_or((None, None));
+            let uid = uid.unwrap_or(0);
+            let tgid = tgid.unwrap_or(pid);
+            cache.meta.insert(pid, (uid, tgid, st.starttime));
+            (uid, tgid)
+        } else {
+            let (uid, tgid, _) = cache.meta[&pid];
+            (uid, tgid)
         };
-        let (uid, tgid) = parse_status_uid_tgid(&status_data);
-        if let Some(tg) = tgid
-            && tg != pid
-        {
+        if tgid != pid {
             continue;
         }
-        let comm = read_comm(pid).unwrap_or(st.comm.clone());
-        let cmdline = read_cmdline(pid);
-        let ticks = st.utime + st.stime;
-        let rss = read_statm_rss(pid, sys.page_size);
-        let start_secs = boot + st.starttime as f64 / sys.clk_tck as f64;
+        let comm = if st.comm.contains('(') || st.comm.contains(')') {
+            read_comm(pid).unwrap_or(st.comm)
+        } else {
+            st.comm
+        };
+        let stale_cmdline = cache
+            .cmdline
+            .get(&pid)
+            .map(|(_, at)| cache.poll.saturating_sub(*at) >= CMDLINE_REFRESH_PERIOD)
+            .unwrap_or(true);
+        if reused || stale_cmdline {
+            cache.cmdline.insert(pid, (read_cmdline(pid), cache.poll));
+        }
+        let cmdline = cache
+            .cmdline
+            .get(&pid)
+            .map(|(c, _)| c.clone())
+            .unwrap_or_default();
         out.push(Process {
             pid,
             ppid: st.ppid,
             comm,
             cmdline,
-            uid: uid.unwrap_or(0),
-            ticks,
-            rss,
-            start_secs,
+            uid,
+            ticks: st.utime + st.stime,
+            rss: st.rss * sys.page_size,
+            start_secs: boot + st.starttime as f64 / sys.clk_tck as f64,
         });
     }
+    let alive: std::collections::HashSet<i32> = out.iter().map(|p| p.pid).collect();
+    cache.meta.retain(|pid, _| alive.contains(pid));
+    cache.cmdline.retain(|pid, _| alive.contains(pid));
     out
 }
 
@@ -330,7 +383,7 @@ mod tests {
 
     #[test]
     fn parses_stat() {
-        let line = "1234 (worker) S 100 100 100 0 -1 4194560 100 0 0 0 12345 6789 0 0 20 0 4 0 987654 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        let line = "1234 (worker) S 100 100 100 0 -1 4194560 100 0 0 0 12345 6789 0 0 20 0 4 0 987654 0 4096 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
         let st = parse_stat(line).unwrap();
         assert_eq!(st.comm, "worker");
         assert_eq!(st.state, 'S');
@@ -338,6 +391,7 @@ mod tests {
         assert_eq!(st.utime, 12345);
         assert_eq!(st.stime, 6789);
         assert_eq!(st.starttime, 987654);
+        assert_eq!(st.rss, 4096);
     }
 
     #[test]

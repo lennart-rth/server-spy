@@ -192,6 +192,7 @@ pub struct Collector {
     collecting_secs: f64,
     started: Instant,
     shared_procs: Option<Arc<Mutex<Vec<Process>>>>,
+    scan_cache: procfs::ScanCache,
 }
 
 impl Collector {
@@ -220,6 +221,7 @@ impl Collector {
             collecting_secs: 0.0,
             started: Instant::now(),
             shared_procs: None,
+            scan_cache: procfs::ScanCache::new(),
         }
     }
 
@@ -245,7 +247,7 @@ impl Collector {
 
         let psi = procfs::read_psi();
         let (mem_total, mem_avail) = procfs::meminfo();
-        let procs = procfs::scan_processes(&self.sys, self.boot);
+        let procs = procfs::scan_processes(&self.sys, self.boot, &mut self.scan_cache);
         if let Some(shared) = &self.shared_procs {
             *shared.lock().unwrap() = procs.clone();
         }
@@ -581,6 +583,11 @@ impl Collector {
         let mut g_cpu = 0u64;
         if let Some(last) = &self.g_sched_last {
             for p in &procs {
+                let ran = !self.pid_last.contains_key(&p.pid)
+                    || delta_ticks(&self.pid_last, p.pid, p.ticks) > 0;
+                if !ran {
+                    continue;
+                }
                 if let Some((cpu, wait)) = procfs::read_schedstat(p.pid) {
                     g_sched.insert(p.pid, (cpu, wait));
                     let (lc, lw) = last.get(&p.pid).copied().unwrap_or((cpu, wait));

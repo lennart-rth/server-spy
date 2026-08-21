@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>server-spy - system congestion tracker for shared servers</title>
+<meta name="description" content="server-spy measures how much CPU, memory and I/O your experiment processes actually got on a busy shared server - and who took the rest.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a class="brand" href="#">server-spy<span class="cursor"></span></a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#quickstart">Quick start</a>
+      <a href="https://github.com/lennart-rth/server-spy">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="container">
+    <div class="tag">$ ./server-spy</div>
+    <h1>server-spy</h1>
+    <p class="sub">
+      "If you can't beat them, join them."<br>
+      Measure how much of the resources your experiment actually gets,<br>and who is stealing it from you.
+    </p>
+    <div class="cta">
+      <a class="btn solid" href="#install">Install</a>
+      <a class="btn" href="#features">Features</a>
+      <a class="btn" href="https://github.com/lennart-rth/server-spy">GitHub</a>
+    </div>
+    <div class="badges">
+      <img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version">
+      <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release">
+      <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status">
+      <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license">
+    </div>
+  </div>
+</header>
+
+<div class="tui-wrap">
+  <div class="tui-shell">
+    <div class="tui-titlebar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      ./server-spy demo
+    </div>
+    <div class="tui-screen">
+<pre><span style="color:aqua;">Worker Filter: </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">&quot;worker.py&quot;</span>                                                                                                            <span style="filter: contrast(70%) brightness(190%);color:dimgray;">rec 00:01:13  cores 16 · mem 30.0G · procs 399</span>┌ Live congestion ─────────────────────────────────────────────────────┐┌ Experiment Runs ─────────────────────────────────────────────────────────────────────────────────────────┐│<span style="color:aqua;">███</span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">█████████████████████████████████████</span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> cpu 0.580%</span>                   ││<span style="font-weight:bold;"></span><span style="font-weight:bold;color:aqua;">params                                           wall  cpu    wait% cpu%  rss    psi-c psi-m psi-io state</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">████████████████████████████████████████</span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:fuchsia;"> mem 0.000%</span>                   ││worker.py --duration 5.0 --mem 800 --algo=hnsw - 6.0s  5.6s   <span style="color:lime;">0.388</span> 5.82% 815.0M <span style="color:lime;">2.85%</span> <span style="color:lime;">0.000</span> <span style="color:lime;">0.049%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="color:#3333FF;">█</span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">███████████████████████████████████████</span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:#3333FF;"> io 0.061%</span>                    ││worker.py --duration 6.5 --mem 1100 --algo=ivf - 8.2s  7.5s   <span style="color:lime;">0.186</span> 5.71% 1.1G   <span style="color:lime;">2.92%</span> <span style="color:lime;">0.002</span> <span style="color:lime;">0.058%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="color:lime;">██</span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">██████████████████████████████████████</span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:lime;"> wait sys 0.339%</span>              ││worker.py --duration 8.0 --mem 1200 --algo=brute 10.3s 9.3s   <span style="color:lime;">0.115</span> 5.67% 1.2G   <span style="color:lime;">2.65%</span> <span style="color:lime;">0.002</span> <span style="color:lime;">0.052%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">──────────────────────────── last ~30 min ────────────────────────────</span>││worker.py --duration 6.0 --mem 900 --algo=hnsw - 7.4s  6.9s   <span style="color:lime;">0.105</span> 5.82% 915.0M <span style="color:lime;">2.90%</span> <span style="color:lime;">0.000</span> <span style="color:lime;">0.055%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:aqua;"> cpu </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">───────────────────────────────────────────────────────────────┐</span>││worker.py --duration 900                         1m13s 1m12s  <span style="color:lime;">0.089</span> 6.16% 271.0M <span style="color:lime;">0.879</span> <span style="color:lime;">0.000</span> <span style="color:lime;">0.038%</span> <span style="color:lime;">● ali</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:aqua;"> ▃▆▆▃   ▃▁▁▂▁▁▄▅▅▃▂  ▁▅▂▄         ▁▁      ▁              ▁  ▁  ▁▁   </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││worker.py --duration 7.0 --mem 1000 --algo=hnsw  8.3s  7.5s   <span style="color:lime;">0.028</span> 5.68% 1015.0 <span style="color:lime;">2.48%</span> <span style="color:lime;">0.000</span> <span style="color:lime;">0.044%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││worker.py --duration 5.0 --mem 800 --algo=hnsw - 6.0s  5.6s   <span style="color:lime;">0.024</span> 5.83% 815.0M <span style="color:lime;">3.21%</span> <span style="color:lime;">0.003</span> <span style="color:lime;">0.070%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:fuchsia;"> mem </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">───────────────────────────────────────────────────────────────┐</span>││(cd demo &amp;&amp; python3 worker.py --duration 900 &gt;/d 4.1s  0.0s   <span style="color:lime;">0.000</span> 0.000 10.0M  <span style="color:lime;">3.22%</span> <span style="color:lime;">0.000</span> <span style="color:lime;">0.059%</span> <span style="filter: contrast(70%) brightness(190%);color:dimgray;">○ don</span> ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:fuchsia;">                      ▆                                             </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:#3333FF;"> io </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">────────────────────────────────────────────────────────────────┐</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:#3333FF;">  ▅▄ ▁  ▂ ▁▁▁ ▁▂▃▃▄▁▁▂▂▂  ▁ ▁    ▁▁  ▁ ▁ ▁     ▁   ▁▁    ▁ ▁   ▁▂  ▂</span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:lime;"> wait sys </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">──────────────────────────────────────────────────────────┐</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:lime;"> ▆▂▁▁   ▁ ▁▁  ▁▁▁▁▁   ▂▁▁                                           </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          ││                                                                      ││                                                                                                          │└──────────────────────────────────────────────────────────────────────┘│                                                                                                          │┌ Resource utilization ────────────────────────────────────────────────┐│                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:aqua;"> cpu </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">───────────────────────────────────────────────────────────────┐</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:lime;">█████████████████</span><span style="color:red;">██████████████████████████████████████████████</span>     <span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:aqua;"> mem </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">───────────────────────────────────────────────────────────────┐</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:lime;">██████</span><span style="color:red;">██████████████████████████████████████</span>                        <span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">┌</span><span style="color:aqua;"> io </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">────────────────────────────────────────────────────────────────┐</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span><span style="color:red;">██</span>                                                                  <span style="filter: contrast(70%) brightness(190%);color:dimgray;">│</span>││                                                                                                          ││<span style="filter: contrast(70%) brightness(190%);color:dimgray;">└────────────────────────────────────────────────────────────────────┘</span>││                                                                                                          ││<span style="color:lime;">■ </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">target Workers  </span><span style="color:red;">■ </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">other processes</span>                                   ││                                                                                                          │└──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘┌ Other users ──────────────────────────────────────────────────────────────────┐┌ Other Processes ────────────────────────────────────────────────────────────────────────────────┐│<span style="font-weight:bold;"></span><span style="font-weight:bold;color:aqua;">#                    user      cpu ▼    wait     rss      procs cores%  share </span> ││<span style="font-weight:bold;"></span><span style="font-weight:bold;color:aqua;">#   user     comm         cpu ▼     wait     rss      cmdline                                   </span> ││-                    <span style="filter: contrast(70%) brightness(190%);color:fuchsia;">root</span>      7.2s     1.0s     291.9M   252   0.619%  <span style="color:red;">100.0%</span> ││-   <span style="color:lime;">lennart</span>  python3.13   1m12s     0.0s     14.7M    python3 antagonists.py --role cpu --arg 2  ││                                                                               ││-   <span style="color:lime;">lennart</span>  python3.13   1m12s     0.0s     14.7M    python3 antagonists.py --role cpu --arg 3  ││                                                                               ││-   <span style="color:lime;">lennart</span>  python3.13   1m12s     0.0s     14.7M    python3 antagonists.py --role cpu --arg 1  ││                                                                               ││-   <span style="color:lime;">lennart</span>  python3.13   1m12s     0.0s     14.7M    python3 antagonists.py --role cpu --arg 0  ││                                                                               ││-   <span style="color:lime;">lennart</span>  .opencode-u… 58.9s     0.6s     1.3G     .opencode-unwrapped                        ││                                                                               ││-   <span style="color:lime;">lennart</span>  python3.13   56.8s     0.4s     22.7M    python3 antagonists.py --role io --arg 2…  ││                                                                               ││-   <span style="color:lime;">lennart</span>  brave        8.7s      0.3s     467.3M                                              ││                                                                               ││-   <span style="color:lime;">lennart</span>  brave        7.8s      0.1s     323.5M                                              ││                                                                               ││                                                                                                 ││                                                                               ││                                                                                                 │└───────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────────────────┘<span style="font-weight:bold;"></span><span style="font-weight:bold;color:aqua;"> q </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">terminate  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> d </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">detach  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> s </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">save  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> l </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">load  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> f </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">update exp. filter  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> t </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">stealth  </span><span style="font-weight:bold;filter: contrast(70%) brightness(190%);color:dimgray;"></span><span style="font-weight:bold;color:aqua;"> r </span><span style="filter: contrast(70%) brightness(190%);color:dimgray;">restart recording  </span></pre>
+    </div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="container">
+    <div class="sec-head">
+      <div class="kicker">What it monitors</div>
+      <h2>find out if and why your runs got slowed down and why</h2>
+      <p>server-spy classifies your experiment processes with a simple name or regex filter, then records everything that happens around them </p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">▁▃▆</div>
+        <h3>Live congestion</h3>
+        <p>CPU overload, RAM exhaustion, disk I/O bottlenecks, scheduler waiting times.</p>
+      </div>
+      <div class="card">
+        <div class="icon">■</div>
+        <h3>Resource utilization</h3>
+        <p>How CPU and memory are split between <em>your</em> workers and everything else.</p>
+      </div>
+      <div class="card">
+        <div class="icon">#</div>
+        <h3>Experiment runs</h3>
+        <p>One row per distinct parameter combination you are running: wall time, CPU time, wait, peak RSS, PSI stall penalty.</p>
+      </div>
+      <div class="card">
+        <div class="icon">👥</div>
+        <h3>Who is slowing you down</h3>
+        <p>Which users on the machine consumed resources during your run and the exact processes behind it.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⇄</div>
+        <h3>Detach &amp; reattach</h3>
+        <p>The daemon keeps recording in the background. Close the TUI, come back later, attach again.</p>
+      </div>
+      <div class="card">
+        <div class="icon">💾</div>
+        <h3>Save &amp; load</h3>
+        <p>Snapshots in plain CSV.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="install">
+  <div class="container">
+    <div class="sec-head">
+      <div class="kicker">Install</div>
+      <p>A single self-contained Linux binary. No runtime dependencies. Installable on user-level.</p>
+    </div>
+    <div class="one-liner">
+      <span class="prompt">$</span> curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sudo sh<br>
+      <span class="prompt">$</span> server-spy tui
+    </div>
+    <div class="methods">
+      <div class="method"><span class="name">Debian / Ubuntu (apt)</span><code>curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sudo sh</code></div>
+      <div class="method"><span class="name">Nix / NixOS</span><code>nix run github:lennart-rth/server-spy</code></div>
+      <div class="method"><span class="name">Arch (AUR)</span><code>paru -S server-spy</code></div>
+      <div class="method"><span class="name">Fedora / RHEL</span><code>rpm -Uvh server-spy-&lt;ver&gt;-1.x86_64.rpm</code></div>
+      <div class="method"><span class="name">crates.io</span><code>cargo install server-spy</code></div>
+      <div class="method"><span class="name">cargo-binstall</span><code>cargo binstall server-spy</code></div>
+      <div class="method"><span class="name">Any Linux (static)</span><code>server-spy-&lt;ver&gt;-x86_64-unknown-linux-musl.tar.gz from GitHub releases</code></div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="container">
+    <div class="sec-head">
+      <div class="kicker">Quick start</div>
+    </div>
+    <div class="split">
+      <div class="flow">
+        <ol>
+          <li><strong>Select your experiment processes</strong> - press <code>f</code>, to filter for your experiment runs using regex or simple matching.</li>
+          <li><strong>Monitor</strong> - Watch who and what is slowing down your experiments.<br>We classify all your different runs based on their parameters and show for each of them how much they are affected by resource congestions.</li>
+          <li><strong>Detach</strong> - Detach the TUI. server-spy continues to collect the data in the background. You can connect again any time.</li>
+        </ol>
+      </div>
+      <table class="keys">
+        <tr><td><kbd>f</kbd></td><td>update the worker filter (with live preview)</td></tr>
+        <tr><td><kbd>s</kbd> / <kbd>l</kbd></td><td>save / load snapshots to disk</td></tr>
+        <tr><td><kbd>q</kbd></td><td>terminate - stop the background daemon and exit</td></tr>
+        <tr><td><kbd>d</kbd></td><td>detach - exit, the daemon keeps recording</td></tr>
+        <tr><td><kbd>r</kbd></td><td>restart recording</td></tr>
+        <tr><td><kbd>t</kbd></td><td>stealth mode - rename the processes so ps/top show something innocuous for others</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>MIT licensed.</p>
+    <p class="mono"><a href="https://github.com/lennart-rth/server-spy">github.com/lennart-rth/server-spy</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

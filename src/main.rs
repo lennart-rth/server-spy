@@ -108,9 +108,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             via_daemon,
         } => {
             if via_daemon {
-                let snap = daemon::request_snapshot()?;
-                let sys = procfs::SysInfo::detect();
-                print!("{}", collector::snapshot_text(&snap, &sys));
+                if let Some(snap) = daemon::request_snapshot(0)? {
+                    let sys = procfs::SysInfo::detect();
+                    print!("{}", collector::snapshot_text(&snap, &sys));
+                }
             } else {
                 let control = Arc::new(Control::new(common.target.clone()));
                 let mut col = Collector::new(dur(common.interval), control, common.history);

@@ -13,7 +13,7 @@ use crate::procfs::Process;
 
 pub use crate::collector::exe_name;
 
-pub const PROTOCOL_VERSION: u8 = 3;
+pub const PROTOCOL_VERSION: u8 = 4;
 
 #[cfg(target_env = "gnu")]
 unsafe extern "C" {
@@ -206,10 +206,18 @@ pub fn preview_filter(filter: &str, regex: bool) -> io::Result<Vec<MatchInfo>> {
     serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-pub fn request_snapshot() -> io::Result<Snapshot> {
+/// Requests the current snapshot. Pass the seq of the last snapshot you have;
+/// returns Ok(None) when nothing changed since, avoiding a full re-transfer.
+pub fn request_snapshot(last_seq: u64) -> io::Result<Option<Snapshot>> {
     let mut stream = connect()?;
     stream.write_all(b"S")?;
+    stream.write_all(&last_seq.to_le_bytes())?;
     stream.flush()?;
+    let mut status = [0u8; 1];
+    stream.read_exact(&mut status)?;
+    if status[0] == b'N' {
+        return Ok(None);
+    }
     let mut len = [0u8; 8];
     stream.read_exact(&mut len)?;
     let n = u64::from_le_bytes(len) as usize;
@@ -218,7 +226,9 @@ pub fn request_snapshot() -> io::Result<Snapshot> {
     }
     let mut buf = vec![0u8; n];
     stream.read_exact(&mut buf)?;
-    serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_slice(&buf)
+        .map(Some)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -325,10 +335,20 @@ fn handle_conn(
             let _ = stream.write_all(&[PROTOCOL_VERSION]);
         }
         b'S' => {
-            let snap = latest.lock().unwrap().clone();
-            let bytes = serde_json::to_vec(&snap).unwrap_or_default();
-            let _ = stream.write_all(&(bytes.len() as u64).to_le_bytes());
-            let _ = stream.write_all(&bytes);
+            let mut buf = [0u8; 8];
+            let last_seq = stream
+                .read_exact(&mut buf)
+                .map(|_| u64::from_le_bytes(buf))
+                .unwrap_or(0);
+            let latest = latest.lock().unwrap();
+            if latest.seq == last_seq {
+                let _ = stream.write_all(b"N");
+            } else {
+                let bytes = serde_json::to_vec(&*latest).unwrap_or_default();
+                let _ = stream.write_all(b"C");
+                let _ = stream.write_all(&(bytes.len() as u64).to_le_bytes());
+                let _ = stream.write_all(&bytes);
+            }
         }
         b'T' => {
             let mut mode = [0u8; 1];

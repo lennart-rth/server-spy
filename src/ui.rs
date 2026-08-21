@@ -99,6 +99,7 @@ pub struct App {
     browser: Option<Browser>,
     stealth: Option<Stealth>,
     filter_btn_area: Rect,
+    dirty: bool,
     interval: Duration,
     hist_cpu: VecDeque<u64>,
     hist_mem: VecDeque<u64>,
@@ -129,6 +130,7 @@ impl App {
             browser: None,
             stealth: None,
             filter_btn_area: Rect::default(),
+            dirty: true,
             interval,
             hist_cpu: VecDeque::new(),
             hist_mem: VecDeque::new(),
@@ -152,32 +154,40 @@ impl App {
         if self.paused {
             return;
         }
-        match daemon::request_snapshot() {
-            Ok(s) => {
-                let changed = self
-                    .snapshot
-                    .as_ref()
-                    .map(|o| o.seq != s.seq)
-                    .unwrap_or(true);
-                if changed {
-                    self.hist_cpu.clear();
-                    self.hist_mem.clear();
-                    self.hist_io.clear();
-                    self.hist_wait.clear();
-                    for [c, m, i, w] in &s.history {
-                        push(&mut self.hist_cpu, (*c * 1000.0) as u64, self.history_len);
-                        push(&mut self.hist_mem, (*m * 1000.0) as u64, self.history_len);
-                        push(&mut self.hist_io, (*i * 1000.0) as u64, self.history_len);
-                        push(&mut self.hist_wait, (*w * 1000.0) as u64, self.history_len);
-                    }
+        let last_seq = self.snapshot.as_ref().map(|s| s.seq).unwrap_or(0);
+        match daemon::request_snapshot(last_seq) {
+            Ok(Some(s)) => {
+                self.hist_cpu.clear();
+                self.hist_mem.clear();
+                self.hist_io.clear();
+                self.hist_wait.clear();
+                for [c, m, i, w] in &s.history {
+                    push(&mut self.hist_cpu, (*c * 1000.0) as u64, self.history_len);
+                    push(&mut self.hist_mem, (*m * 1000.0) as u64, self.history_len);
+                    push(&mut self.hist_io, (*i * 1000.0) as u64, self.history_len);
+                    push(&mut self.hist_wait, (*w * 1000.0) as u64, self.history_len);
                 }
                 if self.name_input.is_empty() && !s.target.is_empty() {
                     self.name_input = s.target.clone();
                 }
                 self.snapshot = Some(s);
                 self.offline = false;
+                self.dirty = true;
             }
-            Err(_) => self.offline = true,
+            Ok(None) => {}
+            Err(_) => {
+                if daemon::ensure_compatible().is_err() {
+                    let target = self
+                        .snapshot
+                        .as_ref()
+                        .map(|s| s.target.clone())
+                        .unwrap_or_else(|| self.name_input.clone());
+                    let _ = daemon::stop();
+                    let _ = daemon::start(&target, self.interval, self.history_len);
+                }
+                self.offline = true;
+                self.dirty = true;
+            }
         }
     }
 }
@@ -393,6 +403,7 @@ fn update_preview(app: &mut App) {
         p.error = None;
         p.last_preview = p.input.clone();
         p.last_regex = p.regex;
+        app.dirty = true;
         return;
     }
     match daemon::preview_filter(&p.input, p.regex) {
@@ -412,6 +423,7 @@ fn update_preview(app: &mut App) {
     }
     p.last_preview = p.input.clone();
     p.last_regex = p.regex;
+    app.dirty = true;
 }
 
 pub fn run(app: &mut App) -> io::Result<()> {
@@ -441,12 +453,24 @@ fn event_loop(
             update_preview(app);
             last_req = Instant::now();
         }
-        terminal.draw(|f| draw(f, app))?;
+        if app.dirty {
+            terminal.draw(|f| draw(f, app))?;
+            app.dirty = false;
+        }
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(k) => handle_key(app, k),
-                Event::Mouse(m) => handle_mouse(app, m),
-                Event::Resize(_, _) => terminal.autoresize()?,
+                Event::Key(k) => {
+                    handle_key(app, k);
+                    app.dirty = true;
+                }
+                Event::Mouse(m) => {
+                    handle_mouse(app, m);
+                    app.dirty = true;
+                }
+                Event::Resize(_, _) => {
+                    terminal.autoresize()?;
+                    app.dirty = true;
+                }
                 _ => {}
             }
         }

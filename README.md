@@ -4,24 +4,24 @@
 <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
 
 # Server-Spy
-"if you can't beat them, join them"
+"If you can't beat them, join them"
+Measure how much of the resources your experiment actually gets, and who is stealing it from you.
 
-A monitoring tool to measure resource congestion for time critical experiments, on servers that don't have slurm for "ReAsOnS".
-On smaller academic servers where multiple people run jobs, coordination is often hard or not reliable. So if you suspect that your measurements got affected by someone else running stuff, use this tool to see exactly how much congestion was on the server while specific runs of yours were active.
+On smaller academic servers where multiple people run jobs, coordination is often hard or not reliable. 
+Use this tool to see exactly how much congestion was on the server while specific runs of yours were active.
 
 [ we will embed a demo video here ]
 
-
 # Who is this for
-Researchers that run time or performance critical experiments on servers where multiple users share the box and no proper coordination is used.
-If you ever saw your experiment results and wondered why that one random run was way slower than all the others, and you suspected that the server was very busy at that moment.
+- Researchers that run time or performance critical experiments on servers with multiple users and no slurm installed.
+- If you ever saw your experiment results and wondered why that one run was way slower than all the others, and you suspected that the server was busy at that moment.
 
 # What it shows you:
-- **Live congestion** — CPU, memory and I/O pressure (PSI stall metrics) and scheduler wait, as gauges with history sparklines
-- **Schedule wait for your processes** — how much of the wall time your processes were blocked on the CPU scheduler
-- **Resource utilization** — how CPU and memory are split between your workers and the rest of the machine
-- **RSS** — peak memory of each run
-- **Experiment Runs** — one row per distinct parameter combination of your worker, with wall time, CPU time, wait, avg CPU%, peak RSS, PSI stall penalty and alive/done state
+- **Live congestion** - CPU, memory and I/O pressure (PSI stall metrics) and scheduler wait
+- **Schedule wait for your processes** - how much of the wall time your processes were blocked on the CPU scheduler
+- **Resource utilization** - how CPU and memory are split between your workers and the rest of the machine
+- **RSS** - peak memory of each run
+- **Experiment Runs** - one row per distinct parameter combination of your worker, with wall time, CPU time, wait, avg CPU%, peak RSS, PSI stall penalty and alive/done state
 - **Top users and top processes** that lead to any congestion while YOUR experiments are supposed to run without disturbance
 - **Metrics that tell exactly which of your single runs were affected how much**
 
@@ -29,10 +29,10 @@ If you ever saw your experiment results and wondered why that one random run was
 Set a simple or regex filter that is used to classify what processes are your experiment runs. For example if you have a runner script that launches multiple sub processes that run experiments with different parameters, server-spy automatically detects all parameter combinations and shows your different runs in a list, together with how the server was utilized while that specific run was active.
 
 The flow:
-- press `f` to define/update the filter — the popup shows a live preview of which processes match, confirm and recording starts
-- detach the TUI (`d`) — the monitoring runs in a detached background daemon; starting the tool again attaches back to it to visualize
+- press `f` to define/update the filter
+- detach the TUI (`d`)
 - terminate (`q`) to quit and stop the monitoring
-- save and load results (`s` / `l`) — a file browser saves/loads plain CSV snapshots you can open in a spreadsheet
+- save and load results (`s` / `l`)
 
 ## keys
 
@@ -40,46 +40,31 @@ The flow:
 |---|---|
 | `f` | update the worker filter (popup with live preview, simple/regex) |
 | `s` / `l` | save / load a snapshot via a file browser |
-| `q` | **terminate** — stop the daemon and exit |
-| `d` | **detach** — exit, daemon keeps recording in the background |
+| `q` | **terminate** - stop the daemon and exit |
+| `d` | **detach** - exit, daemon keeps recording in the background |
 | `r` | restart recording (or `live` when viewing a loaded file) |
-| `t` | stealth mode — rename our processes (e.g. to `htop`) so `ps`/`top` show something innocuous |
-| `j`/`k`, arrows | scroll lists |
-| mouse | click headers to sort, scroll wheel to scroll, click buttons/popups |
+| `t` | stealth mode - rename our processes (e.g. to `htop`) so `ps`/`top` show something innocuous |
+
 
 # Installation
 
-server-spy is a single self-contained Linux binary (no runtime dependencies). Pick whichever fits your machine:
+```sh
+curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sudo sh
+```
 
 | Method | Command |
 |---|---|
 | crates.io | `cargo install server-spy` |
 | Debian / Ubuntu (apt repo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install.sh \| sudo sh` |
-| Prebuilt static binary | download `server-spy-<ver>-<arch>-unknown-linux-musl.tar.gz` from the [GitHub releases](https://github.com/lennart-rth/server-spy/releases) — works on any Linux (incl. Alpine), just unpack and run |
+| Prebuilt static binary | download `server-spy-<ver>-<arch>-unknown-linux-musl.tar.gz` from the [GitHub releases](https://github.com/lennart-rth/server-spy/releases) - works on any Linux (incl. Alpine), just unpack and run |
 | cargo-binstall | `cargo binstall server-spy` |
 | Fedora / RHEL | `rpm -Uvh server-spy-<ver>-1.x86_64.rpm` |
 | Arch (AUR) | `paru -S server-spy` |
 | Nix / NixOS | `nix run github:lennart-rth/server-spy` or `nix profile install github:lennart-rth/server-spy` |
 
-### apt repository (Debian / Ubuntu)
-
-A signed apt repository is hosted on GitHub Pages. Once a release is published,
-install with the one-liner above, or manually:
-
-```sh
-curl -fsSL https://lennart-rth.github.io/server-spy/server-spy.gpg.key \
-  | gpg --dearmor -o /usr/share/keyrings/server-spy.gpg
-echo "deb [signed-by=/usr/share/keyrings/server-spy.gpg] \
-  https://lennart-rth.github.io/server-spy/ stable main" \
-  > /etc/apt/sources.list.d/server-spy.list
-apt update && apt install server-spy
-```
-
-Supports `amd64` and `arm64`. The repository is rebuilt automatically on
-every GitHub release.
 
 # Commands
-`server-spy tui` just starts the TUI — all the other things can be done inside it too.
+`server-spy` to starts the TUI
 
 | Command | What it does |
 |---|---|
@@ -96,12 +81,12 @@ Common options for `tui` / `start` / `daemon`:
 |---|---|---|
 | `--interval SECS` | `1` | poll interval |
 | `--target NAME` | empty | initial worker filter |
-| `--history N` | `1800` | sparkline samples (~30 min at 1 s) |
-
+| `--history N` | `1800` |  for timeline plots |
 
 
 # Roadmap
-- [x] automatic releases pipeline (GitHub Actions: static binaries, .deb, .rpm on every tag)
-- [x] tidy up readme
-- [ ] record demo video
-- [ ] write github pages webpage that promotes the tool
+- remove the tui from the install comand, also make it so that copying it doesnt copy the $ sign at the line start. Also add a copy button to the top right of the code box for this
+- remove AUR intall option. we dont have that anymore
+- make the Any Linux (static) install optoin so that the explanation "from GitHub releases" is not in command langauge style. also link pack to the realeases page here!
+- make a better test demo that is more realsitic so also name the workers all like they make sense, and maybe is there a way to simulate different users? so that all functionalities are simulated?
+- [ ] Add GPU monitoring
