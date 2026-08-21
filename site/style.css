@@ -155,6 +155,23 @@ nav .links a:hover { color: var(--accent); }
     white-space: pre;
 }
 
+/* ---------- cast player ---------- */
+
+.cast-wrap {
+    max-width: 1180px;
+    margin: 40px auto 0;
+    padding: 0 24px;
+}
+.cast-wrap .ap-wrapper,
+.cast-wrap .ap-player {
+    width: 100% !important;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 60px rgba(0, 217, 255, 0.05);
+    overflow: hidden;
+}
+
 /* ---------- sections ---------- */
 
 section { padding: 72px 0; }
@@ -190,20 +207,18 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
 .card p { color: var(--muted); font-size: 14.5px; }
 
 /* install */
-.methods { display: flex; flex-direction: column; gap: 10px; max-width: 760px; margin: 0 auto; }
-.method {
-    display: flex; align-items: baseline; gap: 16px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 13px 18px;
-    font-size: 14.5px;
+.quick-title {
+    max-width: 760px;
+    margin: 0 auto;
+    color: var(--muted);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 8px;
 }
-.method .name { min-width: 200px; color: var(--muted); font-size: 13.5px; }
-.method code { font-family: var(--mono); font-size: 13px; color: var(--accent); word-break: break-all; }
-
 .one-liner {
-    margin: 26px auto 0;
+    position: relative;
+    margin: 0 auto;
     max-width: 760px;
     background: #0a0d12;
     border: 1px solid var(--border);
@@ -214,7 +229,69 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
     color: #e6edf3;
     overflow-x: auto;
 }
-.one-liner .prompt { color: var(--green); }
+.one-liner .prompt {
+    color: var(--green);
+    user-select: none;
+    -webkit-user-select: none;
+}
+.copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--bg-soft);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.copy-btn:hover { color: var(--accent); border-color: var(--accent-dim); }
+.copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+.install-table {
+    width: 100%;
+    max-width: 760px;
+    margin: 26px auto 0;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+.install-table th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+}
+.install-table td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.install-table tr:last-child td { border-bottom: none; }
+.install-table td:first-child { color: var(--text); white-space: nowrap; }
+.install-table td:nth-child(2) { width: 55%; }
+.install-table code {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--accent);
+    word-break: break-all;
+}
+.install-table td:last-child {
+    color: var(--muted);
+    font-size: 13px;
+}
+.install-table a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--accent-dim);
+}
+.install-table a:hover { color: var(--accent-dim); }
 
 /* keys + flow */
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }

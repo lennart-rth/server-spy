@@ -20,7 +20,8 @@ jobs:
         run: |
           mkdir -p stage
           cp -r site/. stage/
-          cp install-apt.sh stage/install.sh
+          cp install.sh stage/install.sh
+          cp install-apt.sh stage/install-apt.sh
           touch stage/.nojekyll
       - uses: actions/upload-artifact@v4
         with:

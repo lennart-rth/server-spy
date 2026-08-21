@@ -80,21 +80,30 @@ jobs:
           path: dist/*.deb
 
   rpm:
-    name: rpm
-    runs-on: ubuntu-20.04
+    name: rpm (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-20.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
     needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: Install cargo-generate-rpm
         run: cargo install cargo-generate-rpm --locked
       - name: Build .rpm
-        run: cargo generate-rpm
+        run: cargo generate-rpm --target ${{ matrix.target }}
       - name: Collect
         run: mkdir -p dist && cp target/generate-rpm/*.rpm dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: rpm
+          name: rpm-${{ matrix.target }}
           path: dist/*.rpm
 
   release:

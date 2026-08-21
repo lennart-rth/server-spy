@@ -9,18 +9,20 @@ OUTDIR = "/tmp/server-spy-demo"
 
 
 def main():
-    p = argparse.ArgumentParser(description="fake experiment run")
-    p.add_argument("--algo", default="hnsw")
+    p = argparse.ArgumentParser(description="fake ANN benchmark run")
+    p.add_argument("--index", default="hnsw", choices=["hnsw", "ivf", "bruteforce"])
     p.add_argument("--M", type=int, default=16)
     p.add_argument("--ef", type=int, default=64)
-    p.add_argument("--nlist", type=int, default=100)
-    p.add_argument("--nprobe", type=int, default=10)
+    p.add_argument("--nlist", type=int, default=1024)
+    p.add_argument("--nprobe", type=int, default=16)
+    p.add_argument("--dataset", default="glove-100")
+    p.add_argument("--batch", type=int, default=1000)
     p.add_argument("--duration", type=float, default=5.0)
     p.add_argument("--mem", type=int, default=256)
     args = p.parse_args()
 
     os.makedirs(OUTDIR, exist_ok=True)
-    rng = random.Random(args.M * 7919 + args.ef * 104729 + args.nlist)
+    rng = random.Random(args.M * 7919 + args.ef * 104729 + args.nlist + args.nprobe)
     size = args.mem * 1024 * 1024
     buf = bytearray(size)
     view = memoryview(buf)
@@ -28,13 +30,13 @@ def main():
     for off in range(0, size, page):
         view[off : off + page] = b"\x00" * min(page, size - off)
 
-    chunks_per_query = 16 if args.algo == "bruteforce" else 8
-    io_interval = 0.3 if args.algo == "ivf" else 1.0
+    chunks_per_query = 16 if args.index == "bruteforce" else 8
+    io_interval = 0.3 if args.index == "ivf" else 1.0
     queries = 0
     touched = 0
     last_io = 0.0
     start = time.monotonic()
-    result_path = os.path.join(OUTDIR, f"results-{args.algo}.jsonl")
+    result_path = os.path.join(OUTDIR, f"results-{args.dataset}-{args.index}.jsonl")
     result = open(result_path, "a")
 
     while True:
@@ -53,7 +55,13 @@ def main():
             payload = os.urandom(8192)
             result.write(
                 json.dumps(
-                    {"algo": args.algo, "M": args.M, "ef": args.ef, "payload": payload.hex()[:64]}
+                    {
+                        "index": args.index,
+                        "M": args.M,
+                        "ef": args.ef,
+                        "dataset": args.dataset,
+                        "payload": payload.hex()[:64],
+                    }
                 )
                 + "\n"
             )
@@ -65,9 +73,10 @@ def main():
     print(
         json.dumps(
             {
-                "algo": args.algo,
+                "index": args.index,
                 "M": args.M,
                 "ef": args.ef,
+                "dataset": args.dataset,
                 "queries": queries,
                 "touched_mb": touched / (1024 * 1024),
                 "elapsed_s": round(time.monotonic() - start, 2),

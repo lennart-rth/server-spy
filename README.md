@@ -48,18 +48,21 @@ The flow:
 
 # Installation
 
+The universal installer needs no sudo — it downloads the prebuilt static
+binary into `~/.local/bin` (or `/usr/local/bin` when run as root):
+
 ```sh
-curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sudo sh
+curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sh
 ```
 
 | Method | Command |
 |---|---|
+| Any Linux (no sudo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install.sh \| sh` |
 | crates.io | `cargo install server-spy` |
-| Debian / Ubuntu (apt repo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install.sh \| sudo sh` |
+| Debian / Ubuntu (apt repo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install-apt.sh \| sudo sh` |
 | Prebuilt static binary | download `server-spy-<ver>-<arch>-unknown-linux-musl.tar.gz` from the [GitHub releases](https://github.com/lennart-rth/server-spy/releases) - works on any Linux (incl. Alpine), just unpack and run |
 | cargo-binstall | `cargo binstall server-spy` |
-| Fedora / RHEL | `rpm -Uvh server-spy-<ver>-1.x86_64.rpm` |
-| Arch (AUR) | `paru -S server-spy` |
+| Fedora / RHEL | `rpm -Uvh server-spy-<ver>-1.x86_64.rpm` (also `aarch64` on [GitHub releases](https://github.com/lennart-rth/server-spy/releases)) |
 | Nix / NixOS | `nix run github:lennart-rth/server-spy` or `nix profile install github:lennart-rth/server-spy` |
 
 
@@ -85,8 +88,10 @@ Common options for `tui` / `start` / `daemon`:
 
 
 # Roadmap
-- remove the tui from the install comand, also make it so that copying it doesnt copy the $ sign at the line start. Also add a copy button to the top right of the code box for this
-- remove AUR intall option. we dont have that anymore
-- make the Any Linux (static) install optoin so that the explanation "from GitHub releases" is not in command langauge style. also link pack to the realeases page here!
-- make a better test demo that is more realsitic so also name the workers all like they make sense, and maybe is there a way to simulate different users? so that all functionalities are simulated?
-- [ ] Add GPU monitoring
+website:
+- [x] remove the tui from the install comand, also make it so that copying it doesnt copy the $ sign at the line start. Also add a copy button to the top right of the code box for this
+- [x] remove AUR intall option. we dont have that anymore
+- [x] make the Any Linux (static) install optoin so that the explanation "from GitHub releases" is not in command langauge style. also link pack to the realeases page here!
+
+Code:
+- [x] make a better test demo that is more realsitic so also name the workers all like they make sense, and maybe is there a way to simulate different users? so that all functionalities are simulated?
