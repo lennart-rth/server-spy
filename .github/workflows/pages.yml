@@ -48,9 +48,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Install cargo-deb
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb
+        run: cargo install cargo-deb --locked
       - name: Build .deb
         run: cargo deb --no-strip --target ${{ matrix.target }}
       - name: Stage package
