@@ -113,6 +113,7 @@ jobs:
     needs: [site, apt]
     if: always() && needs.site.result == 'success' && (needs.apt.result == 'success' || needs.apt.result == 'skipped')
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: stage
@@ -124,6 +125,18 @@ jobs:
           name: apt-repo
           path: stage
           merge-multiple: true
+      - name: Restore apt repository from previous deploy
+        if: needs.apt.result != 'success'
+        run: |
+          git fetch --depth=1 origin gh-pages:gh-pages || true
+          if [ -e gh-pages ]; then
+            for item in pool dists server-spy.gpg.key install-apt.sh; do
+              if [ -e "gh-pages/$item" ]; then
+                mkdir -p stage
+                cp -r "gh-pages/$item" stage/
+              fi
+            done
+          fi
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
