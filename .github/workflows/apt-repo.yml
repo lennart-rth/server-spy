@@ -1,0 +1,94 @@
+name: apt-repo
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: deb (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-20.04
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Build .deb
+        run: cargo deb --no-strip --target ${{ matrix.target }}
+      - name: Stage package
+        run: |
+          mkdir -p stage/pool/main/s/server-spy
+          cp target/${{ matrix.target }}/debian/*.deb stage/pool/main/s/server-spy/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: stage/
+
+  repo:
+    name: assemble + deploy apt repo
+    needs: deb
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: stage
+          merge-multiple: true
+      - name: Install apt-ftparchive
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+      - name: Generate package index
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p stage/dists/stable/main/binary-$arch
+            apt-ftparchive -a "$arch" packages stage/pool \
+              > "stage/dists/stable/main/binary-$arch/Packages"
+            gzip -k -9 "stage/dists/stable/main/binary-$arch/Packages"
+          done
+      - name: Generate Release file
+        run: |
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="server-spy" \
+            -o APT::FTPArchive::Release::Label="server-spy" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Description="server-spy package repository" \
+            release stage/dists/stable > stage/dists/stable/Release
+      - name: Sign Release (when APT_GPG_KEY secret is set)
+        if: env.APT_GPG_KEY != ''
+        env:
+          APT_GPG_KEY: ${{ secrets.APT_GPG_KEY }}
+        run: |
+          echo "$APT_GPG_KEY" | gpg --batch --yes --import
+          gpg --batch --yes --armor --detach-sign \
+            -o stage/dists/stable/Release.gpg stage/dists/stable/Release
+          gpg --batch --yes --clearsign \
+            -o stage/dists/stable/InRelease stage/dists/stable/Release
+          gpg --batch --yes --armor --export > stage/server-spy.gpg.key
+      - name: Stage installer
+        run: |
+          touch stage/.nojekyll
+          cp install-apt.sh stage/install.sh
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: stage
+          publish_branch: gh-pages
+          force_orphan: true

@@ -54,12 +54,29 @@ server-spy is a single self-contained Linux binary (no runtime dependencies). Pi
 | Method | Command |
 |---|---|
 | crates.io | `cargo install server-spy` |
+| Debian / Ubuntu (apt repo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install.sh \| sudo sh` |
 | Prebuilt static binary | download `server-spy-<ver>-<arch>-unknown-linux-musl.tar.gz` from the [GitHub releases](https://github.com/lennart-rth/server-spy/releases) — works on any Linux (incl. Alpine), just unpack and run |
 | cargo-binstall | `cargo binstall server-spy` |
-| Debian / Ubuntu | `dpkg -i server-spy_<ver>_amd64.deb` |
 | Fedora / RHEL | `rpm -Uvh server-spy-<ver>-1.x86_64.rpm` |
 | Arch (AUR) | `paru -S server-spy` |
 | Nix / NixOS | `nix run github:lennart-rth/server-spy` or `nix profile install github:lennart-rth/server-spy` |
+
+### apt repository (Debian / Ubuntu)
+
+A signed apt repository is hosted on GitHub Pages. Once a release is published,
+install with the one-liner above, or manually:
+
+```sh
+curl -fsSL https://lennart-rth.github.io/server-spy/server-spy.gpg.key \
+  | gpg --dearmor -o /usr/share/keyrings/server-spy.gpg
+echo "deb [signed-by=/usr/share/keyrings/server-spy.gpg] \
+  https://lennart-rth.github.io/server-spy/ stable main" \
+  > /etc/apt/sources.list.d/server-spy.list
+apt update && apt install server-spy
+```
+
+Supports `amd64` and `arm64`. The repository is rebuilt automatically on
+every GitHub release.
 
 # Commands
 `server-spy tui` just starts the TUI — all the other things can be done inside it too.
