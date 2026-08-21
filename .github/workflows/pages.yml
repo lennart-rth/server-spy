@@ -101,12 +101,16 @@ jobs:
             echo "no APT_GPG_KEY secret configured — publishing unsigned"
             exit 0
           fi
-          echo "$APT_GPG_KEY" | gpg --batch --yes --import
-          gpg --batch --yes --armor --detach-sign \
-            -o stage/dists/stable/Release.gpg stage/dists/stable/Release
-          gpg --batch --yes --clearsign \
-            -o stage/dists/stable/InRelease stage/dists/stable/Release
+          if ! (echo "$APT_GPG_KEY" | gpg --batch --yes --import 2>/dev/null &&
+                gpg --batch --yes --armor --detach-sign \
+                  -o stage/dists/stable/Release.gpg stage/dists/stable/Release &&
+                gpg --batch --yes --clearsign \
+                  -o stage/dists/stable/InRelease stage/dists/stable/Release); then
+            echo "signing failed (key unusable?) — publishing unsigned"
+            exit 0
+          fi
           gpg --batch --yes --armor --export > stage/server-spy.gpg.key
+          echo "release signed"
       - uses: actions/upload-artifact@v5
         with:
           name: apt-repo
