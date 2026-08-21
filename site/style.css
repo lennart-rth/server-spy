@@ -217,32 +217,37 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
     margin-bottom: 8px;
 }
 .one-liner {
-    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin: 0 auto;
     max-width: 760px;
     background: #0a0d12;
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 18px 20px;
+    padding: 14px 16px;
     font-family: var(--mono);
     font-size: 13.5px;
     color: #e6edf3;
-    overflow-x: auto;
 }
 .one-liner .prompt {
     color: var(--green);
     user-select: none;
     -webkit-user-select: none;
+    flex-shrink: 0;
+}
+.one-liner #install-cmd-text {
+    flex: 1;
+    overflow-x: auto;
+    white-space: nowrap;
 }
 .copy-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
+    flex-shrink: 0;
     background: var(--bg-soft);
     color: var(--muted);
     border: 1px solid var(--border);
     border-radius: 5px;
-    padding: 3px 10px;
+    padding: 4px 12px;
     font-family: var(--mono);
     font-size: 11px;
     cursor: pointer;

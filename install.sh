@@ -22,7 +22,20 @@ esac
 echo "server-spy: resolving latest release..."
 VERSION=$(curl -fsSL "$API" | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p' | head -n1)
 if [ -z "$VERSION" ]; then
-    echo "server-spy: no release found — check https://github.com/$REPO/releases" >&2
+    echo "server-spy: no prebuilt release found for $REPO — trying to build from source" >&2
+    if command -v cargo >/dev/null 2>&1; then
+        if [ "$(id -u)" = 0 ]; then
+            CARGO_ROOT=/usr/local
+        else
+            CARGO_ROOT=${SERVER_SPY_BIN_DIR:-$HOME/.local}
+        fi
+        cargo install --git "https://github.com/$REPO" --locked --root "$CARGO_ROOT" server-spy
+        "$CARGO_ROOT/bin/server-spy" --version
+        echo "server-spy: installed."
+        exit 0
+    fi
+    echo "server-spy: no prebuilt release and no cargo available." >&2
+    echo "  check https://github.com/$REPO/releases" >&2
     exit 1
 fi
 echo "server-spy: latest version is $VERSION"
