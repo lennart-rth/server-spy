@@ -15,6 +15,7 @@ pub use crate::collector::exe_name;
 
 pub const PROTOCOL_VERSION: u8 = 3;
 
+#[cfg(target_env = "gnu")]
 unsafe extern "C" {
     static program_invocation_name: *const libc::c_char;
 }
@@ -28,6 +29,16 @@ pub fn rename_self(name: &str) {
             libc::prctl(libc::PR_SET_NAME, c.as_ptr() as usize);
         }
     }
+    #[cfg(target_env = "gnu")]
+    clobber_argv(name);
+}
+
+/// Overwrites the real argv memory (glibc `program_invocation_name`) so
+/// /proc/<pid>/cmdline shows only the new name. glibc-only: musl provides no
+/// way to locate the original argv buffer, so there the comm rename above is
+/// all we get.
+#[cfg(target_env = "gnu")]
+fn clobber_argv(name: &str) {
     let argc = std::env::args_os().count();
     unsafe {
         let start = program_invocation_name as *const u8;

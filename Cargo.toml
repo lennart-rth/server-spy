@@ -2,6 +2,18 @@
 name = "server-spy"
 version = "0.1.0"
 edition = "2024"
+description = "System congestion tracker for shared servers: watch what your experiment processes get vs what the rest of the machine consumes"
+license = "MIT"
+repository = "https://github.com/lennart-rth/server-spy"
+readme = "README.md"
+keywords = ["monitoring", "psi", "system", "performance", "procfs"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+exclude = ["demo"]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive", "string"] }
@@ -11,3 +23,17 @@ ratatui = "0.30.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+[package.metadata.deb]
+maintainer = "lennart-rth <lennart-rth@users.noreply.github.com>"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/server-spy", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+release = "1"
+assets = [
+    { source = "target/release/server-spy", dest = "/usr/bin/server-spy", mode = "755" },
+]
