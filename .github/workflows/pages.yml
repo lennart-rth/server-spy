@@ -93,9 +93,14 @@ jobs:
             -o APT::FTPArchive::Release::Components="main" \
             -o "APT::FTPArchive::Release::Description=server-spy package repository" \
             release stage/dists/stable > stage/dists/stable/Release
-      - name: Sign Release (when APT_GPG_KEY secret is set)
-        if: env.APT_GPG_KEY != ''
+      - name: Sign Release
+        env:
+          APT_GPG_KEY: ${{ secrets.APT_GPG_KEY }}
         run: |
+          if [ -z "$APT_GPG_KEY" ]; then
+            echo "no APT_GPG_KEY secret configured — publishing unsigned"
+            exit 0
+          fi
           echo "$APT_GPG_KEY" | gpg --batch --yes --import
           gpg --batch --yes --armor --detach-sign \
             -o stage/dists/stable/Release.gpg stage/dists/stable/Release
