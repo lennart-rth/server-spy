@@ -52,14 +52,14 @@ The universal installer needs no sudo — it downloads the prebuilt static
 binary into `~/.local/bin` (or `/usr/local/bin` when run as root):
 
 ```sh
-curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/install.sh | sh
 ```
 
 | Method | Command |
 |---|---|
-| Any Linux (no sudo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install.sh \| sh` |
+| Any Linux (no sudo) | `curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/install.sh \| sh` |
 | crates.io | `cargo install server-spy` |
-| Debian / Ubuntu (apt repo) | `curl -fsSL https://lennart-rth.github.io/server-spy/install-apt.sh \| sudo sh` |
+| Debian / Ubuntu (apt repo) | `curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/install-apt.sh \| sudo sh` |
 | Prebuilt static binary | download `server-spy-<ver>-<arch>-unknown-linux-musl.tar.gz` from the [GitHub releases](https://github.com/lennart-rth/server-spy/releases) - works on any Linux (incl. Alpine), just unpack and run |
 | cargo-binstall | `cargo binstall server-spy` |
 | Fedora / RHEL | `rpm -Uvh server-spy-<ver>-1.x86_64.rpm` (also `aarch64` on [GitHub releases](https://github.com/lennart-rth/server-spy/releases)) |

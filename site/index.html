@@ -98,7 +98,7 @@
     </div>
     <div class="quick-title">Quick install</div>
     <div class="one-liner" id="install-cmd">
-      <span class="prompt">$</span> curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sh
+      <span class="prompt">$</span><span id="install-cmd-text"> curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/install.sh | sh</span>
       <button class="copy-btn" id="copy-btn" type="button">copy</button>
     </div>
     <table class="install-table">
@@ -147,9 +147,9 @@
 <script>
 (function () {
     var btn = document.getElementById("copy-btn");
-    var box = document.getElementById("install-cmd");
+    var cmd = document.getElementById("install-cmd-text");
     btn.addEventListener("click", function () {
-        var text = box.innerText.replace(/\$\s*/g, "").trim();
+        var text = cmd.innerText.trim();
         var done = function () {
             btn.textContent = "copied";
             btn.classList.add("copied");
