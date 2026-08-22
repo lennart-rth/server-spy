@@ -1,7 +1,8 @@
 <img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version"> <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release"> <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status"> <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
 
 # Server-Spy
-"If you can't beat them, join them"
+*"If you can't beat them, join them"*
+
 Measure how much of the resources your experiment actually gets, and who is stealing it from you.
 
 On smaller academic servers where multiple people run jobs, coordination is often hard or not reliable. 
