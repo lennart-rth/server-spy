@@ -12,3 +12,6 @@ perf.data*
 
 # internal work-in-progress notes
 FEATURES.md
+
+# local clones of awesome lists for PR submissions
+awesome_repos/
