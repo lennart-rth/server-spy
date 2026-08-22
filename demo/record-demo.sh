@@ -60,6 +60,11 @@ trap cleanup EXIT INT TERM HUP
 cleanup
 sleep 0.5
 
+# a fresh environment (CI) has no first-run marker yet, which would pop up
+# the welcome notice and swallow the scripted keystrokes below; mark it seen
+mkdir -p "$HOME/.local/state/server-spy" 2>/dev/null || true
+touch "$HOME/.local/state/server-spy/first-run" 2>/dev/null || true
+
 # start the demo scenario
 setsid python3 demo/antagonists.py $ANT_ARGS </dev/null >/dev/null 2>&1 &
 setsid python3 demo/runner.py </dev/null >/dev/null 2>&1 &

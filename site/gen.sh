@@ -165,6 +165,12 @@ if start in html and end in html:
     html = html[:i] + block + html[j:]
 else:
     print("warning: machine-meta markers not found in index.html; not modified", file=sys.stderr)
+# cache-bust the static assets: GitHub Pages/CDN caches them by filename, so
+# browsers keep serving a stale style.css after every push
+import re
+html = re.sub(r'href="style\.css"', f'href="style.css?v={version}"', html)
+html = re.sub(r'href="asciinema-player\.css"', f'href="asciinema-player.css?v={version}"', html)
+html = re.sub(r'src="asciinema-player\.min\.js"', f'src="asciinema-player.min.js?v={version}"', html)
 open(path, "w").write(html)
 print(f"site metadata generated (version {version})")
 PYEOF
