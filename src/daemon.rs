@@ -13,7 +13,7 @@ use crate::procfs::Process;
 
 pub use crate::collector::exe_name;
 
-pub const PROTOCOL_VERSION: u8 = 4;
+pub const PROTOCOL_VERSION: u8 = 5;
 
 #[cfg(target_env = "gnu")]
 unsafe extern "C" {

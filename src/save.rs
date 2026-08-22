@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::collector::{Antag, PsiPct, RunRow, Snapshot, TargetStatus, UserShare};
+use crate::collector::{Antag, PsiPct, RunAnt, RunRow, RunUser, Snapshot, TargetStatus, UserShare};
 use crate::procfs::{PsiFile, PsiLine, PsiSet};
 
 fn expand_path(p: &str) -> String {
@@ -77,6 +78,38 @@ pub fn save_snapshot(s: &Snapshot, path: &str) -> io::Result<()> {
     }
     out.push('\n');
 
+    out.push_str("# run_ants\n");
+    out.push_str("order,pid,comm,cpu_s,rss_b\n");
+    for r in &s.runs {
+        for a in &r.ants {
+            out.push_str(&format!(
+                "{},{},{},{},{}\n",
+                r.order,
+                a.pid,
+                csv(&a.comm),
+                fs(a.cpu_secs),
+                a.rss
+            ));
+        }
+    }
+    out.push('\n');
+
+    out.push_str("# run_users\n");
+    out.push_str("order,user,cpu_s,rss_b,procs\n");
+    for r in &s.runs {
+        for u in &r.run_users {
+            out.push_str(&format!(
+                "{},{},{},{},{}\n",
+                r.order,
+                csv(&u.user),
+                fs(u.cpu_secs),
+                u.rss,
+                u.procs
+            ));
+        }
+    }
+    out.push('\n');
+
     out.push_str("# users\n");
     out.push_str("user,cpu_s,wait_s,rss_b,procs\n");
     for u in &s.users {
@@ -122,6 +155,7 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
     let mut ants = Vec::new();
     let mut section = "";
     let mut order = 0u64;
+    let mut run_idx: HashMap<u64, usize> = HashMap::new();
 
     for raw in text.lines() {
         let line = raw.trim_end_matches('\r');
@@ -152,7 +186,7 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
                         }
                     }
                 }
-                "runs" | "users" | "antagonists" => section = key,
+                "runs" | "users" | "antagonists" | "run_ants" | "run_users" => section = key,
                 _ => {}
             }
             continue;
@@ -186,7 +220,38 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
                         ],
                         alive: cells[11].as_str() == "alive",
                         order,
+                        ants: Vec::new(),
+                        run_users: Vec::new(),
                     });
+                    run_idx.insert(order, runs.len() - 1);
+                }
+            "run_ants"
+                if cells.len() >= 5 && cells[3].parse::<f64>().is_ok() => {
+                    if let (Ok(ord), Ok(pid)) =
+                        (cells[0].parse::<u64>(), cells[1].parse::<i32>())
+                        && let Some(idx) = run_idx.get(&ord)
+                    {
+                        runs[*idx].ants.push(RunAnt {
+                            pid,
+                            comm: cells[2].clone(),
+                            cpu_secs: cell_f(&cells, 3),
+                            rss: cell_u(&cells, 4),
+                        });
+                    }
+                }
+            "run_users"
+                if cells.len() >= 5 && cells[2].parse::<f64>().is_ok() => {
+                    if let (Ok(ord), Ok(procs)) =
+                        (cells[0].parse::<u64>(), cells[4].parse::<usize>())
+                        && let Some(idx) = run_idx.get(&ord)
+                    {
+                        runs[*idx].run_users.push(RunUser {
+                            user: cells[1].clone(),
+                            cpu_secs: cell_f(&cells, 2),
+                            rss: cell_u(&cells, 3),
+                            procs,
+                        });
+                    }
                 }
             "users"
                 if cells.len() >= 5 && cells[1].parse::<f64>().is_ok() => {
@@ -473,6 +538,18 @@ mod tests {
             alive: true,
             order: 1,
             users: 3,
+            ants: vec![RunAnt {
+                pid: 42,
+                comm: "make".into(),
+                cpu_secs: 3.5,
+                rss: 2048,
+            }],
+            run_users: vec![RunUser {
+                user: "alice".into(),
+                cpu_secs: 4.25,
+                rss: 4096,
+                procs: 2,
+            }],
         });
         s.users.push(UserShare {
             user: "lennart".into(),
@@ -517,6 +594,14 @@ mod tests {
         assert_eq!(r.wait_pct, Some(3.28));
         assert!(r.alive);
         assert_eq!(r.rss, 123456789);
+        assert_eq!(r.ants.len(), 1);
+        assert_eq!(r.ants[0].pid, 42);
+        assert_eq!(r.ants[0].comm, "make");
+        assert_eq!(r.ants[0].cpu_secs, 3.5);
+        assert_eq!(r.run_users.len(), 1);
+        assert_eq!(r.run_users[0].user, "alice");
+        assert_eq!(r.run_users[0].cpu_secs, 4.25);
+        assert_eq!(r.run_users[0].procs, 2);
         assert_eq!(l.users.len(), 1);
         assert_eq!(l.users[0].user, "lennart");
         assert_eq!(l.users[0].procs, 2);

@@ -361,6 +361,12 @@ impl Default for ScanCache {
     }
 }
 
+#[cfg(test)]
+pub fn mark_demo_agent(cache: &mut ScanCache, pid: i32, user: &str) {
+    cache.meta.insert(pid, (1000, pid, 0, true));
+    cache.demo_user.insert(pid, user.to_string());
+}
+
 pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache, demo: bool) -> Vec<Process> {
     let mut out = Vec::new();
     cache.poll = cache.poll.wrapping_add(1);

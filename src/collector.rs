@@ -93,6 +93,28 @@ pub struct RunRow {
     pub alive: bool,
     pub order: u64,
     pub users: usize,
+    pub ants: Vec<RunAnt>,
+    pub run_users: Vec<RunUser>,
+}
+
+/// A single other process that consumed CPU while this run was alive
+/// (already filtered to `MIN_CPU_SECS` of per-run CPU time).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunAnt {
+    pub pid: i32,
+    pub comm: String,
+    pub cpu_secs: f64,
+    pub rss: u64,
+}
+
+/// A single other user with active processes while this run was alive
+/// (already filtered to `MIN_CPU_SECS` of per-run CPU time).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunUser {
+    pub user: String,
+    pub cpu_secs: f64,
+    pub rss: u64,
+    pub procs: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +186,27 @@ struct PidAccum {
     rss_peak: u64,
 }
 
+struct RunAntAcc {
+    user: String,
+    comm: String,
+    ticks: u64,
+    rss_peak: u64,
+}
+
+struct RunUserAcc {
+    ticks: u64,
+    rss_peak: u64,
+}
+
+/// A non-owned process that consumed CPU in the current poll interval.
+struct ActivePid {
+    dt: u64,
+    rss: u64,
+    user: String,
+    comm: String,
+    own_user: bool,
+}
+
 struct RunState {
     params: String,
     roots: HashSet<i32>,
@@ -176,6 +219,8 @@ struct RunState {
     rss: u64,
     order: u64,
     users_max: usize,
+    ants: HashMap<i32, RunAntAcc>,
+    users: HashMap<String, RunUserAcc>,
 }
 
 pub struct Collector {
@@ -365,6 +410,31 @@ impl Collector {
             let p = by_pid[&r];
             by_key.entry(cmdline_key(p)).or_default().push(r);
         }
+        let euid = unsafe { libc::geteuid() };
+        let mut active_others: HashMap<i32, ActivePid> = HashMap::new();
+        for p in &procs {
+            if tree.contains(&p.pid) || p.pid == self_pid || p.pid == peer {
+                continue;
+            }
+            let dt = delta_ticks(&self.pid_last, p.pid, p.ticks);
+            if dt == 0 {
+                continue;
+            }
+            if demo && !self.scan_cache.is_demo_agent(p.pid) {
+                continue;
+            }
+            let (user, comm) = active_identity(demo, p, &self.pid_accum, &self.scan_cache);
+            active_others.insert(
+                p.pid,
+                ActivePid {
+                    dt,
+                    rss: p.rss,
+                    user,
+                    comm,
+                    own_user: !demo && p.uid == euid,
+                },
+            );
+        }
         for entry in self.runs.values_mut() {
             entry.roots.retain(|r| by_pid.contains_key(r));
             let mut rss = 0u64;
@@ -398,6 +468,7 @@ impl Collector {
                 }
             } else {
                 entry.last_seen = now_wall;
+                attribute_active(&mut entry.ants, &mut entry.users, &active_others);
             }
         }
         self.runs.retain(|_, e| !e.roots.is_empty());
@@ -423,6 +494,8 @@ impl Collector {
                         rss: 0,
                         order: self.run_order,
                         users_max: 0,
+                        ants: HashMap::new(),
+                        users: HashMap::new(),
                     },
                 );
             }
@@ -476,7 +549,6 @@ impl Collector {
         // how many other human users are actively present right now: logged
         // in (have a controlling tty) or actually running stuff (CPU ticks
         // this interval). Must run before pid_last is refreshed below.
-        let euid = unsafe { libc::geteuid() };
         let mut active_users: HashSet<String> = HashSet::new();
         for p in &procs {
             if tree.contains(&p.pid) || p.pid == self_pid || p.pid == peer {
@@ -565,7 +637,6 @@ impl Collector {
         }
         ants.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         ants.retain(|a| a.cpu_secs >= MIN_CPU_SECS || a.rss >= MIN_RSS_BYTES);
-        ants.truncate(8);
 
         let mut by_user: HashMap<String, (f64, f64, u64, usize)> = HashMap::new();
         for (pid, a) in &self.pid_accum {
@@ -606,7 +677,6 @@ impl Collector {
             .collect();
         users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         users.retain(|u| u.cpu_secs >= MIN_CPU_SECS || u.rss >= MIN_RSS_BYTES);
-        users.truncate(12);
 
         let status = if name.is_empty() {
             TargetStatus::NoTarget
@@ -717,6 +787,30 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
         let psi_i = psi_penalty_pct(full_total(&psi.io).saturating_sub(e.psi_base[2]), wall);
         let mut rootp: Vec<i32> = e.roots.iter().copied().collect();
         rootp.sort_unstable();
+        let mut ants: Vec<RunAnt> = e
+            .ants
+            .iter()
+            .map(|(pid, a)| RunAnt {
+                pid: *pid,
+                comm: a.comm.clone(),
+                cpu_secs: a.ticks as f64 / hz as f64,
+                rss: a.rss_peak,
+            })
+            .filter(|a| a.cpu_secs >= MIN_CPU_SECS)
+            .collect();
+        ants.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
+        let mut run_users: Vec<RunUser> = e
+            .users
+            .iter()
+            .map(|(user, u)| RunUser {
+                user: user.clone(),
+                cpu_secs: u.ticks as f64 / hz as f64,
+                rss: u.rss_peak,
+                procs: e.ants.values().filter(|a| &a.user == user).count(),
+            })
+            .filter(|u| u.cpu_secs >= MIN_CPU_SECS)
+            .collect();
+        run_users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         RunRow {
             params: e.params.clone(),
             roots: rootp,
@@ -730,7 +824,60 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
             alive: !e.roots.is_empty(),
             order: e.order,
             users: e.users_max,
+            ants,
+            run_users,
         }
+}
+
+/// Resolves the display identity of an active "other" process. Demo agents
+/// must always show their fake username (`SERVER_SPY_DEMO_USER`), never the
+/// real uid-derived name cached in `PidAccum`.
+fn active_identity(
+    demo: bool,
+    p: &Process,
+    accum: &HashMap<i32, PidAccum>,
+    cache: &procfs::ScanCache,
+) -> (String, String) {
+    let user = if demo {
+        cache
+            .demo_user(p.pid)
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        accum
+            .get(&p.pid)
+            .map(|a| a.user.clone())
+            .unwrap_or_else(|| procfs::username(p.uid))
+    };
+    let comm = accum
+        .get(&p.pid)
+        .map(|a| a.comm.clone())
+        .unwrap_or_else(|| p.comm.clone());
+    (user, comm)
+}
+
+fn attribute_active(
+    ants: &mut HashMap<i32, RunAntAcc>,
+    users: &mut HashMap<String, RunUserAcc>,
+    active: &HashMap<i32, ActivePid>,
+) {
+    for (pid, a) in active {
+        let acc = ants.entry(*pid).or_insert_with(|| RunAntAcc {
+            user: a.user.clone(),
+            comm: a.comm.clone(),
+            ticks: 0,
+            rss_peak: 0,
+        });
+        acc.ticks += a.dt;
+        acc.rss_peak = acc.rss_peak.max(a.rss);
+        if !a.own_user {
+            let u = users
+                .entry(a.user.clone())
+                .or_insert_with(|| RunUserAcc { ticks: 0, rss_peak: 0 });
+            u.ticks += a.dt;
+            u.rss_peak = u.rss_peak.max(a.rss);
+        }
+    }
 }
 
 pub fn exe_name() -> String {
@@ -852,7 +999,7 @@ const INTERPRETERS: [&str; 12] = [
     "perl", "ruby",
 ];
 
-const MIN_CPU_SECS: f64 = 1.0;
+pub(crate) const MIN_CPU_SECS: f64 = 1.0;
 const MIN_RSS_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn epoch_now() -> f64 {
@@ -988,6 +1135,106 @@ mod tests {
             fmt_cmdline(&["/usr/bin/python3".into(), "/exp/antagonists.py".into(), "--role=cpu".into()]),
             "python3 antagonists.py --role=cpu"
         );
+    }
+
+    #[test]
+    fn attribute_active_accumulates_per_pid_and_user() {
+        let mut ants: HashMap<i32, RunAntAcc> = HashMap::new();
+        let mut users: HashMap<String, RunUserAcc> = HashMap::new();
+        let active = HashMap::from([
+            (11i32, ActivePid { dt: 100, rss: 10, user: "alice".into(), comm: "make".into(), own_user: false }),
+            (12i32, ActivePid { dt: 50, rss: 20, user: "alice".into(), comm: "cc1".into(), own_user: false }),
+            (13i32, ActivePid { dt: 30, rss: 5, user: "bob".into(), comm: "bash".into(), own_user: false }),
+        ]);
+        attribute_active(&mut ants, &mut users, &active);
+        attribute_active(&mut ants, &mut users, &active);
+        assert_eq!(ants.len(), 3);
+        assert_eq!(ants[&11].ticks, 200);
+        assert_eq!(ants[&12].ticks, 100);
+        assert_eq!(ants[&13].rss_peak, 5);
+        assert_eq!(users["alice"].ticks, 300);
+        assert_eq!(users["bob"].ticks, 60);
+    }
+
+    #[test]
+    fn attribute_active_skips_own_user_in_users_map() {
+        let mut ants: HashMap<i32, RunAntAcc> = HashMap::new();
+        let mut users: HashMap<String, RunUserAcc> = HashMap::new();
+        let active = HashMap::from([(
+            21i32,
+            ActivePid { dt: 100, rss: 10, user: "me".into(), comm: "vim".into(), own_user: true },
+        )]);
+        attribute_active(&mut ants, &mut users, &active);
+        assert_eq!(ants.len(), 1);
+        assert!(users.is_empty());
+    }
+
+    #[test]
+    fn active_identity_prefers_demo_user_in_demo_mode() {
+        let mut cache = procfs::ScanCache::new();
+        procfs::mark_demo_agent(&mut cache, 7, "alice");
+        let mut accum = HashMap::new();
+        accum.insert(
+            7,
+            PidAccum {
+                uid: 1000,
+                user: "lennart".into(),
+                comm: "python3".into(),
+                cmdline: "python3 -c burn".into(),
+                owned: false,
+                ticks: 0,
+                wait_ns: 0,
+                rss_peak: 0,
+            },
+        );
+        let p = Process {
+            pid: 7,
+            ppid: 1,
+            comm: "python3".into(),
+            cmdline: vec![],
+            uid: 1000,
+            ticks: 0,
+            rss: 0,
+            start_secs: 0.0,
+            demo_user: "alice".into(),
+            tty: 0,
+        };
+        let (user, comm) = active_identity(true, &p, &accum, &cache);
+        assert_eq!(user, "alice");
+        assert_eq!(comm, "python3");
+        let (user, _) = active_identity(false, &p, &accum, &cache);
+        assert_eq!(user, "lennart");
+    }
+
+    #[test]
+    fn build_row_filters_ants_below_threshold_and_sorts() {
+        let sys = SysInfo::detect();
+        let mut e = RunState {
+            params: "p".into(),
+            roots: HashSet::new(),
+            start: 0.0,
+            last_seen: 1.0,
+            psi_base: [0, 0, 0],
+            cpu_ns: 0,
+            wait_ns: 0,
+            ticks: 0,
+            rss: 0,
+            order: 1,
+            users_max: 0,
+            ants: HashMap::new(),
+            users: HashMap::new(),
+        };
+        let hz = sys.clk_tck;
+        e.ants.insert(30, RunAntAcc { user: "alice".into(), comm: "hog".into(), ticks: hz * 5, rss_peak: 9 });
+        e.ants.insert(31, RunAntAcc { user: "alice".into(), comm: "dribble".into(), ticks: hz / 2, rss_peak: 3 });
+        e.users.insert("alice".into(), RunUserAcc { ticks: hz * 5, rss_peak: 9 });
+        let row = build_row(&e, 10.0, &PsiSet::default(), &sys);
+        assert_eq!(row.ants.len(), 1);
+        assert_eq!(row.ants[0].pid, 30);
+        assert_eq!(row.ants[0].cpu_secs, 5.0);
+        assert_eq!(row.run_users.len(), 1);
+        assert_eq!(row.run_users[0].user, "alice");
+        assert_eq!(row.run_users[0].procs, 2);
     }
 }
 

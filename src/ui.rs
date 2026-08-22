@@ -89,6 +89,12 @@ struct Stealth {
     default_areas: Vec<(String, Rect)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Highlight {
+    User(String),
+    Ant { pid: i32, comm: String },
+}
+
 pub struct App {
     pub name_input: String,
     snapshot: Option<Snapshot>,
@@ -115,6 +121,10 @@ pub struct App {
     runs_area: Rect,
     users_area: Rect,
     ants_area: Rect,
+    focus: usize,
+    sel_user: Option<usize>,
+    sel_ant: Option<usize>,
+    highlight: Option<Highlight>,
     quit: bool,
 }
 
@@ -146,6 +156,10 @@ impl App {
             runs_area: Rect::default(),
             users_area: Rect::default(),
             ants_area: Rect::default(),
+            focus: 0,
+            sel_user: None,
+            sel_ant: None,
+            highlight: None,
             quit: false,
         }
     }
@@ -658,8 +672,53 @@ fn handle_key(app: &mut App, k: KeyEvent) {
                 app.refresh();
             }
         }
-        KeyCode::Down | KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
-        KeyCode::Up | KeyCode::Char('k') => app.scroll = app.scroll.saturating_sub(1),
+        KeyCode::Tab => app.focus = (app.focus + 1) % 3,
+        KeyCode::Esc => app.highlight = None,
+        KeyCode::Enter => {
+            if app.focus == 1 {
+                apply_highlight(app, 1);
+            } else if app.focus == 2 {
+                apply_highlight(app, 2);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => match app.focus {
+            0 => app.scroll = app.scroll.saturating_add(1),
+            1 => {
+                let n = app.snapshot.as_ref().map(|s| s.users.len()).unwrap_or(0);
+                if n > 0 {
+                    let cur = app.sel_user.unwrap_or(0);
+                    app.sel_user = Some((cur + 1).min(n - 1));
+                    apply_highlight(app, 1);
+                }
+            }
+            _ => {
+                let n = app
+                    .snapshot
+                    .as_ref()
+                    .map(|s| s.antagonists.len())
+                    .unwrap_or(0);
+                if n > 0 {
+                    let cur = app.sel_ant.unwrap_or(0);
+                    app.sel_ant = Some((cur + 1).min(n - 1));
+                    apply_highlight(app, 2);
+                }
+            }
+        },
+        KeyCode::Up | KeyCode::Char('k') => match app.focus {
+            0 => app.scroll = app.scroll.saturating_sub(1),
+            1 => {
+                if let Some(cur) = app.sel_user {
+                    app.sel_user = Some(cur.saturating_sub(1));
+                    apply_highlight(app, 1);
+                }
+            }
+            _ => {
+                if let Some(cur) = app.sel_ant {
+                    app.sel_ant = Some(cur.saturating_sub(1));
+                    apply_highlight(app, 2);
+                }
+            }
+        },
         _ => {}
     }
 }
@@ -704,6 +763,50 @@ fn toggle_sort(state: &mut (usize, bool), col: usize) {
     } else {
         state.0 = col;
         state.1 = false;
+    }
+}
+
+/// Sets `app.highlight` from the currently selected row of the users (1) or
+/// processes (2) panel, in the panel's current sort order.
+fn apply_highlight(app: &mut App, panel: usize) {
+    let Some(s) = &app.snapshot else {
+        return;
+    };
+    if panel == 1 {
+        let mut sorted: Vec<&UserShare> = s.users.iter().collect();
+        sort_users(&mut sorted, app.users_sort);
+        let Some(i) = app.sel_user else {
+            return;
+        };
+        if let Some(u) = sorted.get(i) {
+            app.highlight = Some(Highlight::User(u.user.clone()));
+        }
+    } else if panel == 2 {
+        let mut sorted: Vec<&Antag> = s.antagonists.iter().collect();
+        sort_ants(&mut sorted, app.ants_sort);
+        let Some(i) = app.sel_ant else {
+            return;
+        };
+        if let Some(a) = sorted.get(i) {
+            app.highlight = Some(Highlight::Ant {
+                pid: a.pid,
+                comm: a.comm.clone(),
+            });
+        }
+    }
+}
+
+/// Whether a run row was affected by the highlighted process/user: the
+/// per-run lists are already thresholded (cpu_secs >= 1s), so membership is
+/// the check. Loaded snapshots carry pid -1 for processes, so fall back to
+/// matching the comm there.
+fn run_affected(r: &RunRow, h: &Highlight) -> bool {
+    match h {
+        Highlight::User(u) => r.run_users.iter().any(|ru| &ru.user == u),
+        Highlight::Ant { pid, comm } => r
+            .ants
+            .iter()
+            .any(|a| a.pid == *pid || (*pid < 0 && &a.comm == comm)),
     }
 }
 
@@ -824,6 +927,28 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 && col > 0
             {
                 toggle_sort(&mut app.ants_sort, col);
+            } else if in_rect(m.row, m.column, app.users_area)
+                && m.row > app.users_area.y
+                && let Some(s) = &app.snapshot
+                && !s.users.is_empty()
+            {
+                let idx = app.uscroll + (m.row - app.users_area.y) as usize - 1;
+                if idx < s.users.len() {
+                    app.focus = 1;
+                    app.sel_user = Some(idx);
+                    apply_highlight(app, 1);
+                }
+            } else if in_rect(m.row, m.column, app.ants_area)
+                && m.row > app.ants_area.y
+                && let Some(s) = &app.snapshot
+                && !s.antagonists.is_empty()
+            {
+                let idx = app.ascroll + (m.row - app.ants_area.y) as usize - 1;
+                if idx < s.antagonists.len() {
+                    app.focus = 2;
+                    app.sel_ant = Some(idx);
+                    apply_highlight(app, 2);
+                }
             }
         }
         _ => {}
@@ -904,6 +1029,8 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         ("l", "load"),
         ("f", "update exp. filter"),
         ("t", "stealth"),
+        ("tab", "focus"),
+        ("esc", "clear hl"),
         ("r", if app.paused { "live" } else { "restart recording" }),
     ];
     let mut spans: Vec<Span> = Vec::new();
@@ -1376,7 +1503,24 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let block = Block::bordered().title(" Experiment Runs ");
+    let title = match (&app.snapshot, &app.highlight) {
+        (Some(s), Some(h)) => {
+            let n = s.runs.iter().filter(|r| run_affected(r, h)).count();
+            let what = match h {
+                Highlight::User(u) => format!("user \"{u}\""),
+                Highlight::Ant { pid, comm } => {
+                    if *pid < 0 {
+                        format!("proc {comm}")
+                    } else {
+                        format!("proc {comm} (pid {pid})")
+                    }
+                }
+            };
+            format!(" Experiment Runs — affected by {what}: {n} ")
+        }
+        _ => " Experiment Runs ".to_string(),
+    };
+    let block = Block::bordered().title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let table_area = Rect::new(inner.x, inner.y, inner.width.saturating_sub(1), inner.height);
@@ -1441,36 +1585,66 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         .skip(app.scroll)
         .take(visible)
         .map(|r| {
+            let hl_on = app
+                .highlight
+                .as_ref()
+                .map(|h| run_affected(r, h))
+                .unwrap_or(false);
+            let fg = |s: Style| if hl_on { s.fg(Color::Black) } else { s };
             let st = if r.alive {
-                Span::styled("● alive", Style::default().fg(Color::Green))
+                Span::styled("● alive", fg(Style::default().fg(Color::Green)))
             } else {
-                Span::styled("○ done ", Style::default().fg(Color::DarkGray))
+                Span::styled("○ done ", fg(Style::default().fg(Color::DarkGray)))
             };
             Row::new(vec![
-                Cell::from(Span::raw(r.params.clone())),
+                Cell::from(Span::styled(
+                    r.params.clone(),
+                    if hl_on {
+                        Style::default().fg(Color::Black).bold()
+                    } else {
+                        Style::default()
+                    },
+                )),
                 Cell::from(Span::raw(fmt_secs(r.wall))),
                 Cell::from(Span::raw(fmt_secs(r.cpu_secs))),
                 Cell::from(match r.wait_pct {
-                    Some(p) => Span::styled(fmt_pct(p), Style::default().fg(sev(p))),
-                    None => Span::styled(fmt_secs(r.wait_secs), Style::default().fg(Color::DarkGray)),
+                    Some(p) => Span::styled(fmt_pct(p), fg(Style::default().fg(sev(p)))),
+                    None => Span::styled(
+                        fmt_secs(r.wait_secs),
+                        fg(Style::default().fg(Color::DarkGray)),
+                    ),
                 }),
                 Cell::from(Span::raw(fmt_pct(r.cpu_pct))),
                 Cell::from(Span::raw(fmt_bytes(r.rss))),
                 Cell::from(Span::styled(
                     r.users.to_string(),
-                    if r.users >= 3 {
+                    fg(if r.users >= 3 {
                         Style::default().fg(Color::Yellow)
                     } else if r.users > 0 {
                         Style::default().fg(Color::Green)
                     } else {
                         Style::default().fg(Color::DarkGray)
-                    },
+                    }),
                 )),
-                Cell::from(Span::styled(fmt_pct(r.psi[0]), Style::default().fg(sev(r.psi[0])))),
-                Cell::from(Span::styled(fmt_pct(r.psi[1]), Style::default().fg(sev(r.psi[1])))),
-                Cell::from(Span::styled(fmt_pct(r.psi[2]), Style::default().fg(sev(r.psi[2])))),
+                Cell::from(Span::styled(
+                    fmt_pct(r.psi[0]),
+                    fg(Style::default().fg(sev(r.psi[0]))),
+                )),
+                Cell::from(Span::styled(
+                    fmt_pct(r.psi[1]),
+                    fg(Style::default().fg(sev(r.psi[1]))),
+                )),
+                Cell::from(Span::styled(
+                    fmt_pct(r.psi[2]),
+                    fg(Style::default().fg(sev(r.psi[2]))),
+                )),
                 Cell::from(st),
             ])
+            .style(if hl_on {
+                Style::default().fg(Color::Black).bg(HIGHLIGHT_BG)
+            } else {
+                Style::default()
+            })
         })
         .collect();
     let widths = [
@@ -1518,10 +1692,20 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let cols = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
-    let ublock = Block::bordered().title(" Other users ");
+    let (utitle, utitle_style) = if app.focus == 1 {
+        (" ▸ Other users ◂ ", Style::default().fg(Color::Cyan).bold())
+    } else {
+        (" Other users ", Style::default())
+    };
+    let ublock = Block::bordered().title(Span::styled(utitle, utitle_style));
     let uinner = ublock.inner(cols[0]);
     f.render_widget(ublock, cols[0]);
-    let ablock = Block::bordered().title(" Other Processes ");
+    let (atitle, atitle_style) = if app.focus == 2 {
+        (" ▸ Other Processes ◂ ", Style::default().fg(Color::Cyan).bold())
+    } else {
+        (" Other Processes ", Style::default())
+    };
+    let ablock = Block::bordered().title(Span::styled(atitle, atitle_style));
     let ainner = ablock.inner(cols[1]);
     f.render_widget(ablock, cols[1]);
     let users_area = Rect::new(uinner.x, uinner.y, uinner.width.saturating_sub(1), uinner.height);
@@ -1547,6 +1731,15 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             app.uscroll = 0;
         }
+        if let Some(sel) = app.sel_user {
+            app.sel_user = Some(sel.min(total.saturating_sub(1)));
+            let sel = app.sel_user.unwrap();
+            if sel < app.uscroll {
+                app.uscroll = sel;
+            } else if sel >= app.uscroll + visible {
+                app.uscroll = sel - visible + 1;
+            }
+        }
         let denom = (s.collecting_secs * s.cores as f64).max(1.0);
         let total_cpu: f64 = sorted.iter().map(|u| u.cpu_secs).sum();
         let mut headers: Vec<String> = [
@@ -1565,7 +1758,10 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .skip(app.uscroll)
             .take(visible)
-            .map(|u| {
+            .enumerate()
+            .map(|(i, u)| {
+                let idx = app.uscroll + i;
+                let sel = app.sel_user == Some(idx);
                 let color = user_color(&u.user);
                 let share = if total_cpu > 0.0 {
                     u.cpu_secs / total_cpu * 100.0
@@ -1574,7 +1770,14 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 let cores_pct = u.cpu_secs / denom * 100.0;
                 Row::new(vec![
-                    Cell::from(Span::raw("-")),
+                    Cell::from(Span::styled(
+                        if sel { "▶" } else { "-" },
+                        if sel {
+                            Style::default().fg(Color::Cyan).bold()
+                        } else {
+                            Style::default()
+                        },
+                    )),
                     Cell::from(Span::styled(trunc(&u.user, 9), Style::default().fg(color))),
                     Cell::from(Span::raw(fmt_secs(u.cpu_secs))),
                     Cell::from(Span::raw(fmt_secs(u.wait_secs))),
@@ -1625,6 +1828,15 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         app.ascroll = 0;
     }
+    if let Some(sel) = app.sel_ant {
+        app.sel_ant = Some(sel.min(total.saturating_sub(1)));
+        let sel = app.sel_ant.unwrap();
+        if sel < app.ascroll {
+            app.ascroll = sel;
+        } else if sel >= app.ascroll + visible {
+            app.ascroll = sel - visible + 1;
+        }
+    }
     let mut headers: Vec<String> = [
         "#", "user", "comm", "cpu", "wait", "rss", "cmdline",
     ]
@@ -1642,10 +1854,20 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .skip(app.ascroll)
         .take(visible)
-        .map(|a| {
+        .enumerate()
+        .map(|(i, a)| {
+            let idx = app.ascroll + i;
+            let sel = app.sel_ant == Some(idx);
             let color = user_color(&a.user);
             Row::new(vec![
-                Cell::from(Span::raw("-")),
+                Cell::from(Span::styled(
+                    if sel { "▶" } else { "-" },
+                    if sel {
+                        Style::default().fg(Color::Cyan).bold()
+                    } else {
+                        Style::default()
+                    },
+                )),
                 Cell::from(Span::styled(trunc(&a.user, 8), Style::default().fg(color))),
                 Cell::from(Span::raw(trunc(&a.comm, 12))),
                 Cell::from(Span::raw(fmt_secs(a.cpu_secs))),
@@ -1675,6 +1897,10 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
+
+/// Background of experiment runs affected by the selected process/user.
+/// Text is inverted to black so highlighted rows stay readable.
+const HIGHLIGHT_BG: Color = Color::Yellow;
 
 fn sev(pct: f64) -> Color {
     if pct >= 30.0 {
@@ -1799,6 +2025,7 @@ fn render_scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collector::{RunAnt, RunUser};
 
     fn run(wait: Option<f64>, psi: f64) -> RunRow {
         RunRow {
@@ -1814,6 +2041,8 @@ mod tests {
             alive: false,
             order: 0,
             users: 0,
+            ants: vec![],
+            run_users: vec![],
         }
     }
 
@@ -1890,6 +2119,52 @@ mod tests {
         assert_eq!(st, (3, true));
         toggle_sort(&mut st, 1);
         assert_eq!(st, (1, false));
+    }
+
+    #[test]
+    fn run_affected_matches_user_and_pid() {
+        let mut r = run(None, 0.0);
+        r.ants.push(RunAnt {
+            pid: 42,
+            comm: "make".into(),
+            cpu_secs: 3.0,
+            rss: 0,
+        });
+        r.run_users.push(RunUser {
+            user: "alice".into(),
+            cpu_secs: 5.0,
+            rss: 0,
+            procs: 1,
+        });
+        assert!(run_affected(&r, &Highlight::User("alice".into())));
+        assert!(!run_affected(&r, &Highlight::User("bob".into())));
+        assert!(run_affected(
+            &r,
+            &Highlight::Ant { pid: 42, comm: "make".into() }
+        ));
+        assert!(!run_affected(
+            &r,
+            &Highlight::Ant { pid: 43, comm: "make".into() }
+        ));
+    }
+
+    #[test]
+    fn run_affected_falls_back_to_comm_for_loaded_snapshots() {
+        let mut r = run(None, 0.0);
+        r.ants.push(RunAnt {
+            pid: 42,
+            comm: "make".into(),
+            cpu_secs: 3.0,
+            rss: 0,
+        });
+        assert!(run_affected(
+            &r,
+            &Highlight::Ant { pid: -1, comm: "make".into() }
+        ));
+        assert!(!run_affected(
+            &r,
+            &Highlight::Ant { pid: -1, comm: "cc1".into() }
+        ));
     }
 }
 
