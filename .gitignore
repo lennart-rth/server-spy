@@ -9,3 +9,6 @@
 
 # perf profiling dumps
 perf.data*
+
+# internal work-in-progress notes
+FEATURES.md
