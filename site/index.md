@@ -11,21 +11,25 @@ were active.
 [Install](https://lennart-rth.github.io/server-spy/install.sh) ·
 [GitHub](https://github.com/lennart-rth/server-spy)
 
-## What it shows you
+## What it does
 
-- **Live congestion** — CPU, memory and I/O pressure (PSI stall metrics) and
-  scheduler wait, as gauges with history sparklines
-- **Schedule wait for your processes** — how much of the wall time your
-  processes were blocked on the CPU scheduler
-- **Resource utilization** — how CPU and memory are split between your
-  workers and the rest of the machine
-- **RSS** — peak memory of each run
-- **Experiment Runs** — one row per distinct parameter combination of your
-  worker: wall time, CPU time, wait, avg CPU%, peak RSS, PSI stall penalty,
-  alive/done state, and the peak number of other active users during the run
-- **Top users and top processes** that caused congestion while your
-  experiments were supposed to run without disturbance
-- Metrics that tell exactly which of your single runs were affected how much
+- **Auto-detect your experiment runs** — one row per distinct parameter
+  combination of your worker, with the server resource conditions during each
+  run and how much that run got affected
+- **Easy and interpretable metrics** — SCI (a composite congestion score of
+  CPU, memory and I/O pressure), CF (how many times longer a run took than on
+  an empty server) and scheduler wait time — what each number means for your
+  run
+- **Debug what slows your experiment down** — which system component is the
+  bottleneck on any given machine
+- **Who is slowing you down** — which other users and processes interfered
+  with your experiment the most, which specific runs got disturbed, and the
+  reverse: which user or process interfered with any given experiment run
+- **LaTeX paper-ready export** — statistics table and report template
+  quantifying the server environment and the fairness of resources across all
+  of your experiments
+- **Detach &amp; reattach** — the daemon keeps recording in the background;
+  close the TUI, come back later, attach again
 
 ## Quick start
 

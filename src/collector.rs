@@ -4,41 +4,72 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::metrics::{cpu_pct, psi_penalty_pct, wait_overhead_pct};
+use crate::conditions::CondSummary;
+use crate::metrics::{
+    congestion_factor, congestion_loss_pct, cpu_pct, psi_penalty_pct, stall_secs,
+    wait_overhead_pct,
+};
 use crate::procfs::{self, Process, PsiFile, PsiSet, SysInfo};
 
+/// One include/exclude filter rule for the experiment target. Include rules
+/// are AND-combined (a process must match all of them); exclude rules veto
+/// any process they match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rule {
+    pub pattern: String,
+    pub regex: bool,
+    pub exclude: bool,
+}
+
 pub struct Control {
-    target: Mutex<String>,
-    regex: AtomicBool,
+    rules: Mutex<Vec<Rule>>,
     stealth: Mutex<String>,
     peer: AtomicI32,
     demo: AtomicBool,
     generation: AtomicU64,
+    orig_chain: Mutex<HashSet<i32>>,
 }
 
 impl Control {
     pub fn new(name: String) -> Self {
+        let rules = if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![Rule {
+                pattern: name,
+                regex: false,
+                exclude: false,
+            }]
+        };
         Self {
-            target: Mutex::new(name),
-            regex: AtomicBool::new(false),
+            rules: Mutex::new(rules),
             stealth: Mutex::new(String::new()),
             peer: AtomicI32::new(-1),
             demo: AtomicBool::new(std::env::var("SERVER_SPY_DEMO").is_ok()),
             generation: AtomicU64::new(1),
+            orig_chain: Mutex::new(HashSet::new()),
         }
     }
 
-    pub fn set(&self, name: String, regex: bool) {
-        *self.target.lock().unwrap() = name;
-        self.regex.store(regex, Ordering::SeqCst);
+    /// Ancestor chain of the process that originally launched the daemon.
+    /// Must be captured before the detach double-fork reparents the daemon to
+    /// init, otherwise the launching shell can never be excluded.
+    pub fn set_orig_chain(&self, chain: HashSet<i32>) {
+        *self.orig_chain.lock().unwrap() = chain;
+    }
+
+    pub fn get_orig_chain(&self) -> HashSet<i32> {
+        self.orig_chain.lock().unwrap().clone()
+    }
+
+    pub fn set_rules(&self, rules: Vec<Rule>) {
+        *self.rules.lock().unwrap() = rules;
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn get(&self) -> (String, bool, u64) {
-        let name = self.target.lock().unwrap().clone();
+    pub fn get(&self) -> (Vec<Rule>, u64) {
         (
-            name,
-            self.regex.load(Ordering::SeqCst),
+            self.rules.lock().unwrap().clone(),
             self.generation.load(Ordering::SeqCst),
         )
     }
@@ -93,6 +124,8 @@ pub struct RunRow {
     pub alive: bool,
     pub order: u64,
     pub users: usize,
+    pub cf: Option<f64>,
+    pub cl: Option<f64>,
     pub ants: Vec<RunAnt>,
     pub run_users: Vec<RunUser>,
 }
@@ -150,6 +183,7 @@ pub struct Snapshot {
     pub seq: u64,
     pub history: Vec<[f64; 4]>,
     pub target: String,
+    pub rules: Vec<Rule>,
     pub status: TargetStatus,
     pub psi: PsiSet,
     pub psi_pct: PsiPct,
@@ -162,6 +196,10 @@ pub struct Snapshot {
     pub share_mem: [f64; 3],
     pub antagonists: Vec<Antag>,
     pub users: Vec<UserShare>,
+    pub live_ants: Vec<Antag>,
+    pub live_users: Vec<UserShare>,
+    pub live_dt: f64,
+    pub conditions: CondSummary,
     pub collecting: bool,
     pub cores: u64,
     pub collecting_secs: f64,
@@ -204,6 +242,7 @@ struct ActivePid {
     rss: u64,
     user: String,
     comm: String,
+    cmdline: String,
     own_user: bool,
 }
 
@@ -246,6 +285,7 @@ pub struct Collector {
     started: Instant,
     shared_procs: Option<Arc<Mutex<Vec<Process>>>>,
     scan_cache: procfs::ScanCache,
+    conditions: Option<(usize, CondSummary)>,
 }
 
 impl Collector {
@@ -275,11 +315,43 @@ impl Collector {
             started: Instant::now(),
             shared_procs: None,
             scan_cache: procfs::ScanCache::new(),
+            conditions: None,
         }
     }
 
     pub fn set_shared_procs(&mut self, shared: Arc<Mutex<Vec<Process>>>) {
         self.shared_procs = Some(shared);
+    }
+
+    /// The conditions summary over all finalized runs, recomputed only when a
+    /// run was finalized since the last poll (finalized rows are immutable).
+    fn cached_conditions(&mut self) -> CondSummary {
+        let stale = self
+            .conditions
+            .as_ref()
+            .map(|(n, _)| *n != self.finalized.len())
+            .unwrap_or(true);
+        if stale {
+            let c = crate::conditions::build_conditions(&self.finalized, self.sys.cores);
+            self.conditions = Some((self.finalized.len(), c.clone()));
+            c
+        } else {
+            self.conditions.as_ref().unwrap().1.clone()
+        }
+    }
+
+    /// Finalizes every still-running run (e.g. on a target filter change) as a
+    /// done run, keeping them in `finalized` for later analysis instead of
+    /// dropping the collected data.
+    fn close_old_runs(&mut self, psi: &PsiSet) {
+        for (_, mut e) in std::mem::take(&mut self.runs) {
+            e.roots.clear();
+            let wall = (e.last_seen - e.start).max(0.0);
+            self.finalized.push(build_row(&e, wall, psi, &self.sys));
+            if self.finalized.len() > 1000 {
+                self.finalized.remove(0);
+            }
+        }
     }
 
     pub fn poll(&mut self) -> Snapshot {
@@ -288,17 +360,20 @@ impl Collector {
         self.last_tick = tick;
         let now_wall = epoch_now();
 
-        let (name, is_regex, generation) = self.control.get();
+        let psi = procfs::read_psi();
+        let (rules, generation) = self.control.get();
+        let name = rules_display(&rules);
         if generation != self.generation {
             self.generation = generation;
             self.pid_last.clear();
-            self.runs.clear();
-            self.finalized.clear();
             self.g_sched_last = None;
             self.had_parents = false;
+            // A filter change must not destroy history: finished runs stay
+            // analyzable, and runs still alive under the old filter are closed
+            // out as done at the switch (their roots are no longer tracked).
+            self.close_old_runs(&psi);
         }
 
-        let psi = procfs::read_psi();
         let (mem_total, mem_avail) = procfs::meminfo();
         let demo = self.control.get_demo();
         let procs = procfs::scan_processes(&self.sys, self.boot, &mut self.scan_cache, demo);
@@ -309,11 +384,17 @@ impl Collector {
         let peer = self.control.get_peer();
         let demo = self.control.get_demo();
         let self_pid = std::process::id() as i32;
+        let mut chain = self_chain(self_pid);
+        chain.extend(self.control.get_orig_chain());
+        if peer > 0 {
+            chain.extend(self_chain(peer));
+        }
         let vis: Vec<&Process> = procs
             .iter()
             .filter(|p| {
                 p.pid != self_pid
                     && p.pid != peer
+                    && !chain.contains(&p.pid)
                     && !is_stealth(p, &stealth)
             })
             .collect();
@@ -324,24 +405,12 @@ impl Collector {
         }
 
         let mut tree: HashSet<i32> = HashSet::new();
-        let matched = if name.is_empty() {
-            HashSet::new()
-        } else {
-            let raw: HashSet<i32> = if is_regex {
-                match regex::Regex::new(&name) {
-                    Ok(re) => vis
-                        .iter()
-                        .filter(|p| matches_regex(p, &re, &self.my_exe))
-                        .map(|p| p.pid)
-                        .collect(),
-                    Err(_) => HashSet::new(),
-                }
-            } else {
-                vis.iter()
-                    .filter(|p| matches_name(p, &name, &self.my_exe))
-                    .map(|p| p.pid)
-                    .collect()
-            };
+        let matched = if rules.iter().any(|r| !r.exclude) {
+            let raw: HashSet<i32> = vis
+                .iter()
+                .filter(|p| matches_rules(p, &rules, &self.my_exe))
+                .map(|p| p.pid)
+                .collect();
             let mut leaves = raw.clone();
             for &p in &raw {
                 let mut stack: Vec<i32> = adjacency.get(&p).cloned().unwrap_or_default();
@@ -363,6 +432,8 @@ impl Collector {
                 }
             }
             leaves
+        } else {
+            HashSet::new()
         };
         let mut stack: Vec<i32> = matched.iter().copied().collect();
         while let Some(pid) = stack.pop() {
@@ -413,7 +484,11 @@ impl Collector {
         let euid = unsafe { libc::geteuid() };
         let mut active_others: HashMap<i32, ActivePid> = HashMap::new();
         for p in &procs {
-            if tree.contains(&p.pid) || p.pid == self_pid || p.pid == peer {
+            if tree.contains(&p.pid)
+                || p.pid == self_pid
+                || p.pid == peer
+                || chain.contains(&p.pid)
+            {
                 continue;
             }
             let dt = delta_ticks(&self.pid_last, p.pid, p.ticks);
@@ -424,6 +499,10 @@ impl Collector {
                 continue;
             }
             let (user, comm) = active_identity(demo, p, &self.pid_accum, &self.scan_cache);
+            let cmdline = match self.pid_accum.get(&p.pid) {
+                Some(a) => a.cmdline.clone(),
+                None => fmt_cmdline(&p.cmdline),
+            };
             active_others.insert(
                 p.pid,
                 ActivePid {
@@ -431,12 +510,13 @@ impl Collector {
                     rss: p.rss,
                     user,
                     comm,
+                    cmdline,
                     own_user: !demo && p.uid == euid,
                 },
             );
         }
         for entry in self.runs.values_mut() {
-            entry.roots.retain(|r| by_pid.contains_key(r));
+            entry.roots.retain(|r| by_pid.contains_key(r) && !chain.contains(r));
             let mut rss = 0u64;
             for (pid, o) in &owner {
                 if !entry.roots.contains(o) {
@@ -551,7 +631,11 @@ impl Collector {
         // this interval). Must run before pid_last is refreshed below.
         let mut active_users: HashSet<String> = HashSet::new();
         for p in &procs {
-            if tree.contains(&p.pid) || p.pid == self_pid || p.pid == peer {
+            if tree.contains(&p.pid)
+                || p.pid == self_pid
+                || p.pid == peer
+                || chain.contains(&p.pid)
+            {
                 continue;
             }
             if p.tty == 0 && delta_ticks(&self.pid_last, p.pid, p.ticks) == 0 {
@@ -612,7 +696,12 @@ impl Collector {
 
         let mut ants: Vec<Antag> = Vec::new();
         for (pid, a) in &self.pid_accum {
-            if tree.contains(pid) || a.owned || *pid == self_pid || *pid == peer {
+            if tree.contains(pid)
+                || a.owned
+                || *pid == self_pid
+                || *pid == peer
+                || chain.contains(pid)
+            {
                 continue;
             }
             if demo && !self.scan_cache.is_demo_agent(*pid) {
@@ -644,6 +733,7 @@ impl Collector {
                 || a.owned
                 || *pid == self_pid
                 || *pid == peer
+                || chain.contains(pid)
                 || (!demo && a.uid == euid)
             {
                 continue;
@@ -678,7 +768,7 @@ impl Collector {
         users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         users.retain(|u| u.cpu_secs >= MIN_CPU_SECS || u.rss >= MIN_RSS_BYTES);
 
-        let status = if name.is_empty() {
+        let status = if !rules.iter().any(|r| !r.exclude) {
             TargetStatus::NoTarget
         } else if matched.is_empty() {
             if self.had_parents {
@@ -696,6 +786,7 @@ impl Collector {
         let mut g_sched: HashMap<i32, (u64, u64)> = HashMap::new();
         let mut g_wait = 0u64;
         let mut g_cpu = 0u64;
+        let mut live_wait: HashMap<i32, u64> = HashMap::new();
         // NOTE: pid_last must still hold the previous poll's ticks here, so
         // the "did this process run?" check compares against the last poll.
         if let Some(last) = &self.g_sched_last {
@@ -712,6 +803,7 @@ impl Collector {
                     let dw = wait.saturating_sub(lw);
                     g_cpu += dc;
                     g_wait += dw;
+                    live_wait.insert(p.pid, dw);
                     if collecting
                         && let Some(e) = self.pid_accum.get_mut(&p.pid)
                     {
@@ -728,6 +820,7 @@ impl Collector {
         }
         self.g_sched_last = Some(g_sched);
         let sys_wait = wait_overhead_pct(g_wait, g_cpu);
+        let (live_ants, live_users) = build_live_lists(&active_others, &live_wait, hz);
 
         for p in &procs {
             let sched = sched_map.get(&p.pid).copied();
@@ -756,6 +849,7 @@ impl Collector {
             seq: self.seq,
             history: self.history.iter().copied().collect(),
             target: name,
+            rules,
             status,
             psi,
             psi_pct,
@@ -768,6 +862,10 @@ impl Collector {
             share_mem: [mem_target, mem_others, mem_free],
             antagonists: ants,
             users,
+            live_ants,
+            live_users,
+            live_dt: dt,
+            conditions: self.cached_conditions(),
             collecting,
             cores: self.sys.cores,
             collecting_secs: self.collecting_secs,
@@ -787,6 +885,12 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
         let psi_i = psi_penalty_pct(full_total(&psi.io).saturating_sub(e.psi_base[2]), wall);
         let mut rootp: Vec<i32> = e.roots.iter().copied().collect();
         rootp.sort_unstable();
+        let cpu_secs = e.cpu_ns as f64 / 1e9;
+        let wait_secs = e.wait_ns as f64 / 1e9;
+        let mem_stall = stall_secs(psi_m, wall);
+        let io_stall = stall_secs(psi_i, wall);
+        let cf = congestion_factor(cpu_secs, wait_secs, mem_stall, io_stall);
+        let cl = congestion_loss_pct(wall, wait_secs, mem_stall, io_stall);
         let mut ants: Vec<RunAnt> = e
             .ants
             .iter()
@@ -815,8 +919,8 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
             params: e.params.clone(),
             roots: rootp,
             wall,
-            cpu_secs: e.cpu_ns as f64 / 1e9,
-            wait_secs: e.wait_ns as f64 / 1e9,
+            cpu_secs,
+            wait_secs,
             wait_pct,
             cpu_pct: pct,
             rss: e.rss,
@@ -824,6 +928,8 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
             alive: !e.roots.is_empty(),
             order: e.order,
             users: e.users_max,
+            cf,
+            cl,
             ants,
             run_users,
         }
@@ -856,6 +962,78 @@ fn active_identity(
     (user, comm)
 }
 
+/// The ancestor chain of a pid: itself, its parent, grandparent, ... up to
+/// (but excluding) init. Used to exclude the shell(s) that launched the
+/// daemon/TUI from being tracked as experiment runs or "other" processes —
+/// their cmdline often contains the target name (e.g. `zsh -c "... server-spy
+/// tui --target X"`), which would otherwise create a bogus run that never
+/// finishes.
+pub(crate) fn self_chain(pid: i32) -> HashSet<i32> {
+    let mut out = HashSet::new();
+    let mut cur = pid;
+    for _ in 0..64 {
+        if cur <= 1 {
+            break;
+        }
+        if !out.insert(cur) {
+            break;
+        }
+        match procfs::read_ppid(cur) {
+            Some(p) if p > 0 => cur = p,
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Builds the "live" process and user lists: activity since the last poll
+/// only, from the per-poll active set. `wait` carries the per-pid scheduler
+/// wait deltas of the same interval (keyed by pid).
+fn build_live_lists(
+    active: &HashMap<i32, ActivePid>,
+    wait: &HashMap<i32, u64>,
+    hz: u64,
+) -> (Vec<Antag>, Vec<UserShare>) {
+    let mut ants: Vec<Antag> = Vec::new();
+    for (pid, a) in active {
+        ants.push(Antag {
+            pid: *pid,
+            user: a.user.clone(),
+            comm: a.comm.clone(),
+            cmdline: a.cmdline.clone(),
+            cpu_secs: a.dt as f64 / hz as f64,
+            wait_secs: wait.get(pid).copied().unwrap_or(0) as f64 / 1e9,
+            rss: a.rss,
+        });
+    }
+    ants.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
+    ants.truncate(20);
+    let mut by_user: HashMap<String, (f64, f64, u64, usize)> = HashMap::new();
+    for (pid, a) in active {
+        if a.own_user {
+            continue;
+        }
+        let e = by_user.entry(a.user.clone()).or_default();
+        e.0 += a.dt as f64 / hz as f64;
+        e.1 += wait.get(pid).copied().unwrap_or(0) as f64 / 1e9;
+        e.2 = e.2.max(a.rss);
+        e.3 += 1;
+    }
+    let mut users: Vec<UserShare> = by_user
+        .into_iter()
+        .map(|(user, (cpu_secs, wait_secs, rss, procs))| UserShare {
+            user,
+            cpu_secs,
+            wait_secs,
+            rss,
+            procs,
+        })
+        .collect();
+    users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
+    users.truncate(12);
+    (ants, users)
+}
+
 fn attribute_active(
     ants: &mut HashMap<i32, RunAntAcc>,
     users: &mut HashMap<String, RunUserAcc>,
@@ -885,6 +1063,56 @@ pub fn exe_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "server-spy".to_string())
+}
+
+/// Compact textual representation of a rule set, e.g.
+/// `worker.py AND !vim`.
+pub(crate) fn rules_display(rules: &[Rule]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for r in rules {
+        let p = if r.regex {
+            format!("/{}/", r.pattern)
+        } else {
+            r.pattern.clone()
+        };
+        if r.exclude {
+            parts.push(format!("!{p}"));
+        } else {
+            parts.push(p);
+        }
+    }
+    parts.join(" AND ")
+}
+
+/// Whether a process satisfies the whole rule set: it must match every
+/// include rule and match no exclude rule. Without any include rule nothing
+/// matches.
+pub(crate) fn matches_rules(p: &Process, rules: &[Rule], my_exe: &str) -> bool {
+    let includes: Vec<&Rule> = rules.iter().filter(|r| !r.exclude).collect();
+    if includes.is_empty() {
+        return false;
+    }
+    if !includes.iter().all(|r| rule_matches(p, r, my_exe)) {
+        return false;
+    }
+    rules
+        .iter()
+        .filter(|r| r.exclude)
+        .all(|r| !rule_matches(p, r, my_exe))
+}
+
+fn rule_matches(p: &Process, r: &Rule, my_exe: &str) -> bool {
+    if r.pattern.is_empty() {
+        return false;
+    }
+    if r.regex {
+        match regex::Regex::new(&r.pattern) {
+            Ok(re) => matches_regex(p, &re, my_exe),
+            Err(_) => false,
+        }
+    } else {
+        matches_name(p, &r.pattern, my_exe)
+    }
 }
 
 pub(crate) fn is_stealth(p: &Process, stealth: &str) -> bool {
@@ -1107,6 +1335,62 @@ mod tests {
         assert!(matches_name(&p, "orke", "server-spy"));
     }
 
+    fn rule(pattern: &str, regex: bool, exclude: bool) -> Rule {
+        Rule {
+            pattern: pattern.into(),
+            regex,
+            exclude,
+        }
+    }
+
+    #[test]
+    fn rules_require_all_includes_in_and_mode() {
+        let p = proc(vec![
+            "/usr/bin/python3".into(),
+            "/exp/worker.py".into(),
+            "--algo=hnsw".into(),
+            "--M=16".into(),
+        ]);
+        let rules = vec![rule("worker.py", false, false), rule("algo=hnsw", false, false)];
+        assert!(matches_rules(&p, &rules, "server-spy"));
+        let extra = vec![rule("worker.py", false, false), rule("nonexistent", false, false)];
+        assert!(!matches_rules(&p, &extra, "server-spy"));
+    }
+
+    #[test]
+    fn rules_exclude_vetoes() {
+        let p = proc(vec![
+            "/usr/bin/python3".into(),
+            "/exp/worker.py".into(),
+            "--algo=brute".into(),
+        ]);
+        let rules = vec![rule("worker.py", false, false), rule("brute", false, true)];
+        assert!(!matches_rules(&p, &rules, "server-spy"));
+        let other = vec![rule("worker.py", false, false), rule("hnsw", false, true)];
+        assert!(matches_rules(&p, &other, "server-spy"));
+    }
+
+    #[test]
+    fn rules_need_at_least_one_include() {
+        let p = proc(vec!["worker".into()]);
+        assert!(!matches_rules(&p, &[rule("vim", false, true)], "server-spy"));
+        assert!(!matches_rules(&p, &[], "server-spy"));
+    }
+
+    #[test]
+    fn rules_empty_pattern_and_bad_regex_match_nothing() {
+        let p = proc(vec!["worker".into()]);
+        assert!(!matches_rules(&p, &[rule("", false, false)], "server-spy"));
+        assert!(!matches_rules(&p, &[rule("([", true, false)], "server-spy"));
+    }
+
+    #[test]
+    fn rules_display_joins_with_and_excludes() {
+        let rules = vec![rule("worker.py", true, false), rule("^vim$", true, true)];
+        assert_eq!(rules_display(&rules), "/worker.py/ AND !/^vim$/");
+        assert_eq!(rules_display(&[]), "");
+    }
+
     #[test]
     fn skips_own_binary_instances() {
         let p = proc(vec![
@@ -1138,13 +1422,25 @@ mod tests {
     }
 
     #[test]
+    fn self_chain_walks_ancestors() {
+        let chain = self_chain(std::process::id() as i32);
+        assert!(chain.contains(&(std::process::id() as i32)));
+        let ppid = procfs::read_ppid(std::process::id() as i32).unwrap();
+        assert!(chain.contains(&ppid));
+        assert!(!chain.contains(&1));
+        let bogus = self_chain(999_999_999);
+        assert!(bogus.contains(&999_999_999));
+        assert_eq!(bogus.len(), 1);
+    }
+
+    #[test]
     fn attribute_active_accumulates_per_pid_and_user() {
         let mut ants: HashMap<i32, RunAntAcc> = HashMap::new();
         let mut users: HashMap<String, RunUserAcc> = HashMap::new();
         let active = HashMap::from([
-            (11i32, ActivePid { dt: 100, rss: 10, user: "alice".into(), comm: "make".into(), own_user: false }),
-            (12i32, ActivePid { dt: 50, rss: 20, user: "alice".into(), comm: "cc1".into(), own_user: false }),
-            (13i32, ActivePid { dt: 30, rss: 5, user: "bob".into(), comm: "bash".into(), own_user: false }),
+            (11i32, ActivePid { dt: 100, rss: 10, user: "alice".into(), comm: "make".into(), cmdline: "make -j16".into(), own_user: false }),
+            (12i32, ActivePid { dt: 50, rss: 20, user: "alice".into(), comm: "cc1".into(), cmdline: "cc1".into(), own_user: false }),
+            (13i32, ActivePid { dt: 30, rss: 5, user: "bob".into(), comm: "bash".into(), cmdline: "bash".into(), own_user: false }),
         ]);
         attribute_active(&mut ants, &mut users, &active);
         attribute_active(&mut ants, &mut users, &active);
@@ -1162,7 +1458,7 @@ mod tests {
         let mut users: HashMap<String, RunUserAcc> = HashMap::new();
         let active = HashMap::from([(
             21i32,
-            ActivePid { dt: 100, rss: 10, user: "me".into(), comm: "vim".into(), own_user: true },
+            ActivePid { dt: 100, rss: 10, user: "me".into(), comm: "vim".into(), cmdline: "vim".into(), own_user: true },
         )]);
         attribute_active(&mut ants, &mut users, &active);
         assert_eq!(ants.len(), 1);
@@ -1207,6 +1503,87 @@ mod tests {
     }
 
     #[test]
+    fn closing_runs_on_filter_change_preserves_them_as_done() {
+        let control = Arc::new(Control::new("x".into()));
+        let mut col = Collector::new(Duration::from_secs(1), control, 100);
+        let mut e = RunState {
+            params: "old-filter".into(),
+            roots: HashSet::from([42]),
+            start: 0.0,
+            last_seen: 10.0,
+            psi_base: [0, 0, 0],
+            cpu_ns: 5_000_000_000,
+            wait_ns: 0,
+            ticks: 0,
+            rss: 0,
+            order: 1,
+            users_max: 0,
+            ants: HashMap::new(),
+            users: HashMap::new(),
+        };
+        e.ants.insert(
+            43,
+            RunAntAcc {
+                user: "alice".into(),
+                comm: "make".into(),
+                ticks: 1000,
+                rss_peak: 0,
+            },
+        );
+        col.runs.insert("old-filter".into(), e);
+        col.finalized.push(build_row(
+            &RunState {
+                params: "already-done".into(),
+                roots: HashSet::new(),
+                start: 0.0,
+                last_seen: 5.0,
+                psi_base: [0, 0, 0],
+                cpu_ns: 1_000_000_000,
+                wait_ns: 0,
+                ticks: 0,
+                rss: 0,
+                order: 0,
+                users_max: 0,
+                ants: HashMap::new(),
+                users: HashMap::new(),
+            },
+            5.0,
+            &PsiSet::default(),
+            &SysInfo::detect(),
+        ));
+        col.close_old_runs(&PsiSet::default());
+        assert!(col.runs.is_empty());
+        assert_eq!(col.finalized.len(), 2, "done runs must survive a filter change");
+        let old = col.finalized.iter().find(|r| r.params == "old-filter").unwrap();
+        assert!(!old.alive);
+        assert_eq!(old.wall, 10.0);
+        assert_eq!(old.cpu_secs, 5.0);
+        assert_eq!(old.ants.len(), 1, "per-run attribution is preserved");
+    }
+
+    #[test]
+    fn build_live_lists_aggregates_last_interval_activity() {
+        let hz = SysInfo::detect().clk_tck;
+        let active = HashMap::from([
+            (11i32, ActivePid { dt: hz, rss: 10, user: "alice".into(), comm: "make".into(), cmdline: "make".into(), own_user: false }),
+            (12i32, ActivePid { dt: hz / 2, rss: 20, user: "alice".into(), comm: "cc1".into(), cmdline: "cc1".into(), own_user: false }),
+            (13i32, ActivePid { dt: hz / 4, rss: 5, user: "bob".into(), comm: "bash".into(), cmdline: "bash".into(), own_user: false }),
+            (14i32, ActivePid { dt: hz / 3, rss: 1, user: "me".into(), comm: "vim".into(), cmdline: "vim".into(), own_user: true }),
+        ]);
+        let wait = HashMap::from([(11i32, 500_000_000u64), (12i32, 250_000_000u64)]);
+        let (ants, users) = build_live_lists(&active, &wait, hz);
+        assert_eq!(ants.len(), 4, "own-user processes are still listed as processes");
+        assert_eq!(ants[0].pid, 11);
+        assert_eq!(ants[0].cpu_secs, 1.0);
+        assert_eq!(ants[0].wait_secs, 0.5);
+        assert_eq!(users.len(), 2, "own user is excluded from the user list");
+        assert_eq!(users[0].user, "alice");
+        assert_eq!(users[0].cpu_secs, 1.5);
+        assert_eq!(users[0].procs, 2);
+        assert_eq!(users[1].user, "bob");
+    }
+
+    #[test]
     fn build_row_filters_ants_below_threshold_and_sorts() {
         let sys = SysInfo::detect();
         let mut e = RunState {
@@ -1215,8 +1592,8 @@ mod tests {
             start: 0.0,
             last_seen: 1.0,
             psi_base: [0, 0, 0],
-            cpu_ns: 0,
-            wait_ns: 0,
+            cpu_ns: 5_000_000_000,
+            wait_ns: 2_500_000_000,
             ticks: 0,
             rss: 0,
             order: 1,
@@ -1235,6 +1612,8 @@ mod tests {
         assert_eq!(row.run_users.len(), 1);
         assert_eq!(row.run_users[0].user, "alice");
         assert_eq!(row.run_users[0].procs, 2);
+        assert_eq!(row.cf, Some(1.5));
+        assert_eq!(row.cl, Some(25.0));
     }
 }
 
@@ -1247,7 +1626,7 @@ fn psi_base(psi: &PsiSet) -> [u64; 3] {
 }
 
 pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
-    use crate::metrics::{fmt_bytes, fmt_pct, fmt_secs};
+    use crate::metrics::{fmt_bytes, fmt_pct, fmt_secs, system_congestion_index};
 
     let mut out = String::new();
     let status = match s.status {
@@ -1295,8 +1674,14 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
         None => "—".to_string(),
     };
     out.push_str(&format!(
-        "sys now: sched wait {}  rss total {}  used {}  free {}\n",
+        "sys now: sched wait {}  sci {}  rss total {}  used {}  free {}\n",
         sys_wait,
+        fmt_pct(system_congestion_index(
+            s.psi_pct.cpu_some,
+            s.psi_pct.mem_some,
+            s.psi_pct.io_some,
+            s.sys_wait.unwrap_or(0.0)
+        )),
         fmt_bytes(s.rss_total),
         fmt_bytes(s.mem_total.saturating_sub(s.mem_avail)),
         fmt_bytes(s.mem_avail)
@@ -1308,8 +1693,24 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
             Some(p) => format!("{p:.1}%"),
             None => "—".to_string(),
         };
+        let cf = match r.cf {
+            Some(v) => format!("{v:.2}"),
+            None => "—".to_string(),
+        };
+        let cl = match r.cl {
+            Some(v) => format!("{v:.0}%"),
+            None => "—".to_string(),
+        };
+        let attr = match crate::metrics::attribution(
+            r.wait_secs,
+            stall_secs(r.psi[1], r.wall),
+            stall_secs(r.psi[2], r.wall),
+        ) {
+            Some((c, m, i)) => format!("  attr C{c:.0}% M{m:.0}% I{i:.0}%"),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "  {st} wall {}  cpu {}  wait {wait}  cpu% {}  rss {}  users {}  psi[c {} m {} i {}]  pids {:?}  {}\n",
+            "  {st} wall {}  cpu {}  wait {wait}  cpu% {}  cf {cf}  cl {cl}  rss {}  users {}  psi[c {} m {} i {}]{attr}  pids {:?}  {}\n",
             fmt_secs(r.wall),
             fmt_secs(r.cpu_secs),
             fmt_pct(r.cpu_pct),
@@ -1360,6 +1761,41 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
                 fmt_secs(u.wait_secs),
                 fmt_bytes(u.rss),
                 u.procs
+            ));
+        }
+    }
+    let c = &s.conditions;
+    out.push_str(&format!("conditions ({} completed runs):\n", c.n));
+    if c.n == 0 {
+        out.push_str("  no completed runs yet\n");
+    } else {
+        for (name, d) in [
+            ("sci", &c.sci),
+            ("cl", &c.cl),
+            ("wait%", &c.wait),
+        ] {
+            if let Some(d) = d {
+                out.push_str(&format!(
+                    "  {name:<5} n {}  med {}  mad {} ({}%)  iqr {}  mean {} ± {}  min {}  max {}\n",
+                    d.n,
+                    crate::conditions::fmt_num(d.median),
+                    crate::conditions::fmt_num(d.mad),
+                    crate::conditions::fmt_num(d.mad_rel),
+                    crate::conditions::fmt_num(d.iqr),
+                    crate::conditions::fmt_num(d.mean),
+                    crate::conditions::fmt_num(d.sd),
+                    crate::conditions::fmt_num(d.min),
+                    crate::conditions::fmt_num(d.max),
+                ));
+            }
+        }
+        for w in &c.workloads {
+            out.push_str(&format!(
+                "  workload {:<24} n {}  med wall {}  mad {:.1}%\n",
+                w.params.chars().take(24).collect::<String>(),
+                w.n,
+                fmt_secs(w.wall_median),
+                w.wall_mad_rel
             ));
         }
     }

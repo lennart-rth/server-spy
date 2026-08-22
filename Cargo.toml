@@ -1,6 +1,6 @@
 [package]
 name = "server-spy"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "System congestion tracker for shared servers: watch what your experiment processes get vs what the rest of the machine consumes"
 license = "MIT"
@@ -16,6 +16,7 @@ lto = "thin"
 codegen-units = 1
 
 [dependencies]
+bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.6.6", features = ["derive", "string"] }
 crossterm = "0.29.0"
 libc = "0.2.189"

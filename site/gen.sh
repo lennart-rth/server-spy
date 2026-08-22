@@ -74,12 +74,42 @@ if command -v rsvg-convert >/dev/null 2>&1; then
   </defs>
   <rect width="1200" height="630" fill="#0b0e14"/>
   <rect width="1200" height="630" fill="url(#glow)"/>
-  <text x="80" y="210" font-family="monospace" font-size="76" fill="#00d9ff" font-weight="bold">server-spy</text>
-  <text x="80" y="285" font-family="sans-serif" font-size="32" fill="#c9d1d9">who slowed down your experiment on a shared server</text>
-  <path d="M720 420 H860 L890 330 L960 490 L1010 360 L1030 420 H1100" fill="none" stroke="#3ddc77" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="1100" cy="420" r="9" fill="#3ddc77"/>
-  <text x="80" y="480" font-family="monospace" font-size="26" fill="#7d8590">$ curl -fsSL https://lennart-rth.github.io/server-spy/install.sh | sh</text>
-  <text x="80" y="560" font-family="monospace" font-size="22" fill="#7d8590">Linux · daemon + TUI · PSI · per-run attribution · plain CSV</text>
+  <text x="80" y="155" font-family="monospace" font-size="84" fill="#00d9ff" font-weight="bold">server-spy</text>
+  <text x="80" y="255" font-family="sans-serif" font-size="42" fill="#e6edf3" font-weight="800">Gain confidence about the conditions</text>
+  <text x="80" y="310" font-family="sans-serif" font-size="42" fill="#e6edf3" font-weight="800">and comparability of your experiments.</text>
+  <path d="M900 145 H965 L985 95 L1015 195 L1045 105 L1060 145 H1110" fill="none" stroke="#3ddc77" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="1100,128 1135,145 1100,162" fill="#3ddc77"/>
+  <g>
+    <rect x="240" y="380" width="720" height="170" rx="12" fill="#0f141f" stroke="#1e2635" stroke-width="2"/>
+    <rect x="240" y="380" width="720" height="36" rx="12" fill="#11151f"/>
+    <rect x="240" y="404" width="720" height="12" fill="#11151f"/>
+    <circle cx="266" cy="398" r="5.5" fill="#ff5f56"/>
+    <circle cx="286" cy="398" r="5.5" fill="#ffbd2e"/>
+    <circle cx="306" cy="398" r="5.5" fill="#27c93f"/>
+    <text x="600" y="404" font-family="monospace" font-size="17" fill="#7d8590" text-anchor="middle">server-spy</text>
+    <rect x="266" y="432" width="150" height="8" rx="4" fill="#2a3342"/>
+    <rect x="432" y="432" width="46" height="8" rx="4" fill="#2a3342"/>
+    <rect x="492" y="432" width="46" height="8" rx="4" fill="#2a3342"/>
+    <rect x="552" y="432" width="46" height="8" rx="4" fill="#2a3342"/>
+    <rect x="612" y="432" width="46" height="8" rx="4" fill="#2a3342"/>
+    <rect x="672" y="432" width="46" height="8" rx="4" fill="#2a3342"/>
+    <rect x="266" y="456" width="150" height="16" rx="8" fill="#c9d1d9"/>
+    <rect x="432" y="456" width="60" height="16" rx="8" fill="#00d9ff"/>
+    <rect x="500" y="456" width="30" height="16" rx="8" fill="#00d9ff" opacity="0.55"/>
+    <rect x="540" y="456" width="30" height="16" rx="8" fill="#00d9ff" opacity="0.35"/>
+    <rect x="580" y="456" width="34" height="16" rx="8" fill="#3ddc77"/>
+    <rect x="258" y="486" width="684" height="22" rx="8" fill="#46506b"/>
+    <rect x="272" y="489" width="138" height="16" rx="8" fill="#ffffff" opacity="0.92"/>
+    <rect x="432" y="489" width="70" height="16" rx="8" fill="#7fdfff"/>
+    <rect x="512" y="489" width="30" height="16" rx="8" fill="#7fdfff" opacity="0.6"/>
+    <rect x="552" y="489" width="30" height="16" rx="8" fill="#7fdfff" opacity="0.4"/>
+    <rect x="592" y="489" width="28" height="16" rx="8" fill="#3ddc77"/>
+    <rect x="266" y="522" width="150" height="16" rx="8" fill="#c9d1d9" opacity="0.55"/>
+    <rect x="432" y="522" width="52" height="16" rx="8" fill="#00d9ff" opacity="0.7"/>
+    <rect x="492" y="522" width="30" height="16" rx="8" fill="#00d9ff" opacity="0.4"/>
+    <rect x="532" y="522" width="30" height="16" rx="8" fill="#00d9ff" opacity="0.25"/>
+    <rect x="572" y="522" width="30" height="16" rx="8" fill="#3ddc77" opacity="0.8"/>
+  </g>
 </svg>
 EOF
     rsvg-convert -w 1200 -h 630 /tmp/server-spy-og.svg -o og-image.png
@@ -94,7 +124,7 @@ import sys
 version, desc, site = sys.argv[1], sys.argv[2], sys.argv[3]
 
 block = f"""<!-- machine-meta:start -->
-<meta property="og:title" content="server-spy — who slowed down your experiment on a shared server">
+<meta property="og:title" content="server-spy — gain confidence about the conditions and comparability of your experiments">
 <meta property="og:description" content="{desc}">
 <meta property="og:type" content="website">
 <meta property="og:url" content="{site}/">

@@ -141,6 +141,11 @@ elif mode == "surge":
 
 children = []
 
+# Total runtime of every agent, capped by the --duration flag (surge used to
+# run forever, which made the demo look stuck). Agents pick a random lifetime
+# and are clamped to this.
+DURATION = 120.0
+
 
 def _spawn(mode, name, args, user, mem=0):
     env = os.environ.copy()
@@ -149,7 +154,7 @@ def _spawn(mode, name, args, user, mem=0):
         "mode": mode,
         "mem": mem,
         "io_path": IO_PATH,
-        "dur": random.uniform(240, 600),
+        "dur": min(random.uniform(240, 600), DURATION),
         "surge_users": SMALL_USERS,
     }
     child = subprocess.Popen(
@@ -181,11 +186,15 @@ def spawn_surge():
 
 
 def main():
+    global DURATION
     p = argparse.ArgumentParser(description="fluctuating server load antagonists")
     p.add_argument("--cpu", type=int, default=16, help="persistent CPU hogs (mostly for alice)")
     p.add_argument("--mem", type=int, default=4000, help="total MiB spread over mem agents")
     p.add_argument("--io", type=int, default=800, help="MiB per io burst")
+    p.add_argument("--duration", type=float, default=120.0,
+                   help="total runtime in seconds; all agents self-terminate by then (default 120)")
     args = p.parse_args()
+    DURATION = args.duration
 
     rng = random.Random()
     # alice owns the biggest share but stays under half the processes, so

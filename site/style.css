@@ -10,6 +10,7 @@
     --green: #3fb950;
     --red: #f85149;
     --mono: "SFMono-Regular", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --serif: Georgia, "Times New Roman", "Noto Serif", serif;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -85,11 +86,22 @@ nav .links a:hover { color: var(--accent); }
 }
 .hero .sub {
     max-width: 640px;
-    margin: 20px auto 0;
+    margin: 25px auto 0;
     color: var(--muted);
     font-size: 18px;
 }
-.hero .cta { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.hero .sub .quote {
+    display: block;
+    margin-bottom: 20px;
+}
+.hero .sub .quote q {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 22px;
+    color: var(--text);
+    letter-spacing: 0.3px;
+}
+.hero .cta { margin-top: 100px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 .btn {
     display: inline-block;
     padding: 12px 26px;
@@ -104,7 +116,7 @@ nav .links a:hover { color: var(--accent); }
 .btn:hover { background: rgba(0, 217, 255, 0.08); box-shadow: 0 0 24px rgba(0, 217, 255, 0.25); }
 .btn.solid { background: var(--accent-dim); color: #04161c; font-weight: 700; border-color: transparent; }
 .btn.solid:hover { background: var(--accent); }
-.hero .badges { margin-top: 22px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.hero .badges { margin-top: 27px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 .hero .badges img { height: 20px; }
 
 /* ---------- tui screenshot ---------- */
@@ -203,8 +215,19 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
 }
 .card:hover { border-color: var(--accent-dim); }
 .card .icon { font-family: var(--mono); font-size: 22px; color: var(--accent); }
+.card .icon img {
+    width: 20px;
+    height: 20px;
+    display: block;
+    /* tint the black-on-transparent PNG to the accent blue (#00d9ff) */
+    filter: invert(50%) sepia(11%) saturate(8987%) hue-rotate(187deg) brightness(145%) contrast(142%);
+}
+.card .icon-sm img { width: 18px; height: 18px; }
 .card h3 { font-size: 17px; margin: 12px 0 8px; }
 .card p { color: var(--muted); font-size: 14.5px; }
+.card ul { margin: 0 0 0 18px; padding: 0; }
+.card li { color: var(--muted); font-size: 14.5px; margin: 4px 0; }
+.card li strong { color: var(--text); font-weight: 600; }
 
 /* install */
 .quick-title {

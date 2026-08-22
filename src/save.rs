@@ -58,10 +58,10 @@ pub fn save_snapshot(s: &Snapshot, path: &str) -> io::Result<()> {
     out.push('\n');
 
     out.push_str("# runs\n");
-    out.push_str("params,wall_s,cpu_s,wait_s,wait%,cpu%,rss_b,users,psi_cpu%,psi_mem%,psi_io%,state\n");
+    out.push_str("params,wall_s,cpu_s,wait_s,wait%,cpu%,rss_b,users,psi_cpu%,psi_mem%,psi_io%,state,cf,cl\n");
     for r in &s.runs {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv(&r.params),
             fs(r.wall),
             fs(r.cpu_secs),
@@ -74,6 +74,8 @@ pub fn save_snapshot(s: &Snapshot, path: &str) -> io::Result<()> {
             f(r.psi[1]),
             f(r.psi[2]),
             if r.alive { "alive" } else { "done" },
+            opt_f(r.cf),
+            opt_f(r.cl),
         ));
     }
     out.push('\n');
@@ -220,6 +222,8 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
                         ],
                         alive: cells[11].as_str() == "alive",
                         order,
+                        cf: opt_f_inv(cells.get(12).map(|s| s.as_str()).unwrap_or("")),
+                        cl: opt_f_inv(cells.get(13).map(|s| s.as_str()).unwrap_or("")),
                         ants: Vec::new(),
                         run_users: Vec::new(),
                     });
@@ -300,6 +304,7 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
         seq: 0,
         history: Vec::new(),
         target,
+        rules: Vec::new(),
         status,
         psi,
         psi_pct: PsiPct {
@@ -316,6 +321,10 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
         share_mem,
         antagonists: ants,
         users,
+        live_ants: Vec::new(),
+        live_users: Vec::new(),
+        live_dt: 1.0,
+        conditions: crate::conditions::CondSummary::default(),
         collecting: alive,
         cores,
         collecting_secs: 0.0,
@@ -503,6 +512,7 @@ mod tests {
             seq: 1,
             history: Vec::new(),
             target: "worker.py --algo=hnsw, v2".into(),
+            rules: Vec::new(),
             status: TargetStatus::Active(1),
             psi: PsiSet::default(),
             psi_pct: PsiPct {
@@ -519,6 +529,10 @@ mod tests {
             share_mem: [1.0, 2.0, 97.0],
             antagonists: Vec::new(),
             users: Vec::new(),
+            live_ants: Vec::new(),
+            live_users: Vec::new(),
+            live_dt: 1.0,
+            conditions: crate::conditions::CondSummary::default(),
             collecting: true,
             cores: 16,
             collecting_secs: 0.0,
@@ -538,6 +552,8 @@ mod tests {
             alive: true,
             order: 1,
             users: 3,
+            cf: Some(1.5),
+            cl: Some(25.0),
             ants: vec![RunAnt {
                 pid: 42,
                 comm: "make".into(),
@@ -594,6 +610,8 @@ mod tests {
         assert_eq!(r.wait_pct, Some(3.28));
         assert!(r.alive);
         assert_eq!(r.rss, 123456789);
+        assert_eq!(r.cf, Some(1.5));
+        assert_eq!(r.cl, Some(25.0));
         assert_eq!(r.ants.len(), 1);
         assert_eq!(r.ants[0].pid, 42);
         assert_eq!(r.ants[0].comm, "make");
@@ -615,6 +633,19 @@ mod tests {
         assert_eq!(csv("plain"), "plain");
         assert_eq!(csv("a,b"), "\"a,b\"");
         assert_eq!(csv("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn loads_legacy_csv_without_score_columns() {
+        let text = "# server-spy 0.1.1\n# saved 2026-08-22T00:00:00Z\n# target worker\n# cores 16\n# mem 1\n# rss 1\n# psi cur 0 0 0\n# runs\nparams,wall_s,cpu_s,wait_s,wait%,cpu%,rss_b,users,psi_cpu%,psi_mem%,psi_io%,state\n\"worker.py --a=1\",10,9,0.5,5.6,90,1000,1,1,2,3,done\n\n";
+        let path = std::env::temp_dir().join("server-spy-legacy-test.csv");
+        std::fs::write(&path, text).unwrap();
+        let l = load_snapshot(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(l.runs.len(), 1);
+        assert_eq!(l.runs[0].cf, None);
+        assert_eq!(l.runs[0].cl, None);
+        assert_eq!(l.runs[0].wait_pct, Some(5.6));
     }
 
     #[test]

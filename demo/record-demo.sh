@@ -88,7 +88,7 @@ wait_for_text() {
     pattern="$1"
     i=0
     while [ "$i" -lt 40 ]; do
-        if tmux capture-pane -t rec -p 2>/dev/null | grep -qF "$pattern"; then
+        if tmux capture-pane -t rec -p 2>/dev/null | grep -qE "$pattern"; then
             return 0
         fi
         sleep 0.25
@@ -97,8 +97,8 @@ wait_for_text() {
     return 1
 }
 
-# the command line
-wait_for_text '$' || echo "record-demo: shell prompt not seen" >&2
+# the command line (match any common prompt glyph: zsh/p10k, sh, root, csh)
+wait_for_text '[❯$#%]' || echo "record-demo: shell prompt not seen" >&2
 type_slow "server-spy"
 sleep 0.1
 tmux send-keys -t rec Enter

@@ -219,6 +219,14 @@ pub fn read_comm(pid: i32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// The parent pid of a process, read from /proc/<pid>/stat.
+pub fn read_ppid(pid: i32) -> Option<i32> {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|d| parse_stat(&d))
+        .map(|st| st.ppid)
+}
+
 /// Whether the process carries the demo-agent marker in its environment and,
 /// if so, under which fake username it should appear. Used by demo mode to
 /// simulate "other users" on a shared server.
@@ -501,6 +509,13 @@ mod tests {
         let (cpu, wait) = parse_schedstat("123456789 234567 42\n").unwrap();
         assert_eq!(cpu, 123456789);
         assert_eq!(wait, 234567);
+    }
+
+    #[test]
+    fn reads_own_ppid_chain() {
+        let ppid = read_ppid(std::process::id() as i32).unwrap();
+        assert!(ppid > 0);
+        assert_ne!(ppid, std::process::id() as i32);
     }
 
     #[test]

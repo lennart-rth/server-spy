@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::collector::{Collector, Control, MatchInfo, Snapshot};
+use crate::collector::{Collector, Control, MatchInfo, Rule, Snapshot};
 use crate::procfs::Process;
 
 pub use crate::collector::exe_name;
 
-pub const PROTOCOL_VERSION: u8 = 5;
+pub const PROTOCOL_VERSION: u8 = 12;
 
 #[cfg(target_env = "gnu")]
 unsafe extern "C" {
@@ -79,6 +79,14 @@ pub fn ensure_compatible() -> io::Result<()> {
 }
 
 pub fn socket_path() -> PathBuf {
+    // Prefer the private per-user runtime directory (0700, owned by us):
+    // no other user can create or even reach sockets there. Fall back to
+    // /tmp keyed by uid (still protected by the per-connection uid check).
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !runtime.is_empty()
+    {
+        return PathBuf::from(runtime).join("server-spy.sock");
+    }
     let uid = unsafe { libc::geteuid() };
     std::env::temp_dir().join(format!("server-spy-{uid}.sock"))
 }
@@ -156,18 +164,60 @@ pub fn stop() -> io::Result<()> {
     Ok(())
 }
 
-pub fn set_target_mode(name: &str, regex: bool) -> io::Result<()> {
+pub fn set_rules(rules: &[Rule]) -> io::Result<()> {
     ensure_compatible()?;
     let mut stream = connect()?;
     stream.write_all(b"T")?;
-    stream.write_all(&[regex as u8])?;
-    let n = name.len().min(255);
-    stream.write_all(&(n as u16).to_le_bytes())?;
-    stream.write_all(&name.as_bytes()[..n])?;
+    write_rules(&mut stream, rules)?;
     stream.flush()?;
     let mut ack = [0u8; 1];
     stream.read_exact(&mut ack)?;
     Ok(())
+}
+
+fn write_rules(stream: &mut impl Write, rules: &[Rule]) -> io::Result<()> {
+    stream.write_all(&(rules.len().min(64) as u16).to_le_bytes())?;
+    for r in rules.iter().take(64) {
+        let mut flags = 0u8;
+        if r.regex {
+            flags |= 1;
+        }
+        if r.exclude {
+            flags |= 2;
+        }
+        stream.write_all(&[flags])?;
+        let n = r.pattern.len().min(65535) as u16;
+        stream.write_all(&n.to_le_bytes())?;
+        stream.write_all(&r.pattern.as_bytes()[..n as usize])?;
+    }
+    Ok(())
+}
+
+fn read_rules(stream: &mut impl Read) -> io::Result<Vec<Rule>> {
+    let mut buf = [0u8; 2];
+    stream.read_exact(&mut buf)?;
+    let n = u16::from_le_bytes(buf) as usize;
+    if n > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many filter rules",
+        ));
+    }
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut flags = [0u8; 1];
+        stream.read_exact(&mut flags)?;
+        stream.read_exact(&mut buf)?;
+        let len = u16::from_le_bytes(buf) as usize;
+        let mut pat = vec![0u8; len];
+        stream.read_exact(&mut pat)?;
+        out.push(Rule {
+            pattern: String::from_utf8_lossy(&pat).into_owned(),
+            regex: flags[0] & 1 != 0,
+            exclude: flags[0] & 2 != 0,
+        });
+    }
+    Ok(out)
 }
 
 pub fn set_stealth(name: &str) -> io::Result<()> {
@@ -183,14 +233,11 @@ pub fn set_stealth(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub fn preview_filter(filter: &str, regex: bool) -> io::Result<Vec<MatchInfo>> {
+pub fn preview_rules(rules: &[Rule]) -> io::Result<Vec<MatchInfo>> {
     ensure_compatible()?;
     let mut stream = connect()?;
     stream.write_all(b"P")?;
-    stream.write_all(&[regex as u8])?;
-    let n = filter.len().min(255);
-    stream.write_all(&(n as u16).to_le_bytes())?;
-    stream.write_all(&filter.as_bytes()[..n])?;
+    write_rules(&mut stream, rules)?;
     stream.flush()?;
     let mut len = [0u8; 8];
     stream.read_exact(&mut len)?;
@@ -226,8 +273,8 @@ pub fn request_snapshot(last_seq: u64) -> io::Result<Option<Snapshot>> {
     }
     let mut buf = vec![0u8; n];
     stream.read_exact(&mut buf)?;
-    serde_json::from_slice(&buf)
-        .map(Some)
+    bincode::serde::decode_from_slice(&buf, bincode::config::standard())
+        .map(|(s, _)| Some(s))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -238,6 +285,9 @@ extern "C" fn on_signal(_: libc::c_int) {
 }
 
 pub fn run_detached(target: String, interval: Duration, history_len: usize) -> ! {
+    let control = Arc::new(Control::new(target.clone()));
+    let chain = crate::collector::self_chain(std::process::id() as i32);
+    control.set_orig_chain(chain);
     unsafe {
         let pid = libc::fork();
         if pid > 0 {
@@ -249,7 +299,7 @@ pub fn run_detached(target: String, interval: Duration, history_len: usize) -> !
         }
         libc::setsid();
     }
-    let _ = run_foreground(target, interval, history_len);
+    let _ = run_foreground_with(interval, history_len, control);
     unsafe {
         libc::_exit(0);
     }
@@ -259,6 +309,17 @@ pub fn run_foreground(
     target: String,
     interval: Duration,
     history_len: usize,
+) -> io::Result<()> {
+    let control = Arc::new(Control::new(target.clone()));
+    let chain = crate::collector::self_chain(std::process::id() as i32);
+    control.set_orig_chain(chain);
+    run_foreground_with(interval, history_len, control)
+}
+
+fn run_foreground_with(
+    interval: Duration,
+    history_len: usize,
+    control: Arc<Control>,
 ) -> io::Result<()> {
     unsafe {
         libc::signal(libc::SIGTERM, on_signal as *const () as usize);
@@ -274,12 +335,17 @@ pub fn run_foreground(
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
     listener.set_nonblocking(true)?;
+    // Defense in depth: only the owner may connect (the per-connection uid
+    // check below is the real gate; this also blocks guessing attempts).
+    let _ = fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
 
-    let control = Arc::new(Control::new(target));
     let mut col = Collector::new(interval, control.clone(), history_len);
     let procs_shared: Arc<Mutex<Vec<Process>>> = Arc::new(Mutex::new(Vec::new()));
     col.set_shared_procs(procs_shared.clone());
     let latest: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(col.poll()));
+    // serialized snapshot cache (seq -> bytes): avoids re-encoding the same
+    // snapshot for every client / repeat request
+    let snap_cache: Arc<Mutex<(u64, Vec<u8>)>> = Arc::new(Mutex::new((0, Vec::new())));
 
     let latest2 = latest.clone();
     let collector_thread = std::thread::spawn(move || loop {
@@ -304,7 +370,9 @@ pub fn run_foreground(
             break;
         }
         match listener.accept() {
-            Ok((stream, _)) => handle_conn(stream, &latest, &control, &procs_shared),
+            Ok((stream, _)) => {
+                handle_conn(stream, &latest, &snap_cache, &control, &procs_shared)
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -319,13 +387,22 @@ pub fn run_foreground(
 fn handle_conn(
     mut stream: UnixStream,
     latest: &Mutex<Snapshot>,
+    snap_cache: &Mutex<(u64, Vec<u8>)>,
     control: &Control,
     procs: &Mutex<Vec<Process>>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    if let Some(pid) = peer_pid(&stream) {
-        control.set_peer(pid);
+    // Authenticate: only the owning user may talk to this daemon. The kernel
+    // provides SO_PEERCRED, so the identity cannot be spoofed. Without this,
+    // any local user could read snapshots, change the filter or stop us.
+    let uid = unsafe { libc::geteuid() };
+    let Some(cred) = peer_cred(&stream) else {
+        return;
+    };
+    if cred.uid != uid {
+        return;
     }
+    control.set_peer(cred.pid);
     let mut cmd = [0u8; 1];
     if stream.read_exact(&mut cmd).is_err() {
         return;
@@ -344,27 +421,22 @@ fn handle_conn(
             if latest.seq == last_seq {
                 let _ = stream.write_all(b"N");
             } else {
-                let bytes = serde_json::to_vec(&*latest).unwrap_or_default();
+                let mut cache = snap_cache.lock().unwrap();
+                if cache.0 != latest.seq {
+                    cache.1 = bincode::serde::encode_to_vec(&*latest, bincode::config::standard())
+                        .unwrap_or_default();
+                    cache.0 = latest.seq;
+                }
+                let bytes = &cache.1;
                 let _ = stream.write_all(b"C");
                 let _ = stream.write_all(&(bytes.len() as u64).to_le_bytes());
-                let _ = stream.write_all(&bytes);
+                let _ = stream.write_all(bytes);
             }
         }
         b'T' => {
-            let mut mode = [0u8; 1];
-            if stream.read_exact(&mut mode).is_err() {
-                return;
-            }
-            let mut len = [0u8; 2];
-            if stream.read_exact(&mut len).is_ok() {
-                let n = u16::from_le_bytes(len) as usize;
-                let mut name = vec![0u8; n];
-                if stream.read_exact(&mut name).is_ok() {
-                    control.set(
-                        String::from_utf8_lossy(&name).into_owned(),
-                        mode[0] != 0,
-                    );
-                }
+            match read_rules(&mut stream) {
+                Ok(rules) => control.set_rules(rules),
+                Err(_) => return,
             }
             let _ = stream.write_all(&[0u8]);
         }
@@ -384,22 +456,11 @@ fn handle_conn(
             let _ = stream.write_all(&[0u8]);
         }
         b'P' => {
-            let mut mode = [0u8; 1];
-            if stream.read_exact(&mut mode).is_err() {
-                return;
-            }
-            let mut len = [0u8; 2];
-            if stream.read_exact(&mut len).is_err() {
-                return;
-            }
-            let n = u16::from_le_bytes(len) as usize;
-            let mut buf = vec![0u8; n];
-            if stream.read_exact(&mut buf).is_err() {
-                return;
-            }
-            let filter = String::from_utf8_lossy(&buf);
-            let matches =
-                compute_preview(&filter, mode[0] != 0, &procs.lock().unwrap(), control);
+            let rules = match read_rules(&mut stream) {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            let matches = compute_preview(&rules, &procs.lock().unwrap(), control);
             let bytes = serde_json::to_vec(&matches).unwrap_or_default();
             let _ = stream.write_all(&(bytes.len() as u64).to_le_bytes());
             let _ = stream.write_all(&bytes);
@@ -412,7 +473,7 @@ fn handle_conn(
     }
 }
 
-fn peer_pid(stream: &UnixStream) -> Option<i32> {
+fn peer_cred(stream: &UnixStream) -> Option<libc::ucred> {
     use std::os::unix::io::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -426,43 +487,38 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
         )
     };
     if rc == 0 {
-        Some(cred.pid as i32)
+        Some(cred)
     } else {
         None
     }
 }
 
 fn compute_preview(
-    filter: &str,
-    regex: bool,
+    rules: &[Rule],
     procs: &[Process],
     control: &Control,
 ) -> Vec<MatchInfo> {
-    if filter.is_empty() {
+    if rules.is_empty() || !rules.iter().any(|r| !r.exclude) {
         return Vec::new();
     }
     let my_exe = exe_name();
     let stealth = control.get_stealth();
     let peer = control.get_peer();
     let demo = control.get_demo();
-    let re = if regex {
-        regex::Regex::new(filter).ok()
-    } else {
-        None
-    };
+    let mut chain = crate::collector::self_chain(std::process::id() as i32);
+    chain.extend(control.get_orig_chain());
+    if peer > 0 {
+        chain.extend(crate::collector::self_chain(peer));
+    }
     let mut out: Vec<MatchInfo> = Vec::new();
     for p in procs {
-        if p.pid == peer || crate::collector::is_stealth(p, &stealth) {
+        if p.pid == peer || chain.contains(&p.pid) || crate::collector::is_stealth(p, &stealth) {
             continue;
         }
         if demo && p.demo_user.is_empty() {
             continue;
         }
-        let hit = match &re {
-            Some(re) => crate::collector::matches_regex(p, re, &my_exe),
-            None => crate::collector::matches_name(p, filter, &my_exe),
-        };
-        if hit {
+        if crate::collector::matches_rules(p, rules, &my_exe) {
             out.push(MatchInfo {
                 pid: p.pid,
                 user: if demo {
@@ -515,8 +571,16 @@ mod tests {
         Control::new(String::new())
     }
 
+    fn rule(pattern: &str, regex: bool, exclude: bool) -> Rule {
+        Rule {
+            pattern: pattern.into(),
+            regex,
+            exclude,
+        }
+    }
+
     fn preview(filter: &str, regex: bool) -> Vec<MatchInfo> {
-        compute_preview(filter, regex, &procs(), &control())
+        compute_preview(&[rule(filter, regex, false)], &procs(), &control())
     }
 
     #[test]
@@ -573,7 +637,94 @@ mod tests {
         let mut ps = procs();
         ps.push(proc(20, "htop", vec!["/usr/bin/htop"]));
         ps.push(proc(21, "htop", vec!["/usr/bin/htop"]));
-        let m = compute_preview("htop", false, &ps, &c);
+        let m = compute_preview(&[rule("htop", false, false)], &ps, &c);
         assert_eq!(m.len(), 0);
+    }
+
+    #[test]
+    fn rules_and_and_exclude_combine() {
+        let rules = vec![
+            rule("worker", false, false),
+            rule("algo=hnsw", false, false),
+            rule("sleep", false, true),
+        ];
+        let m = compute_preview(&rules, &procs(), &control());
+        let pids: Vec<i32> = m.iter().map(|x| x.pid).collect();
+        assert_eq!(pids, vec![10]);
+    }
+
+    #[test]
+    fn exclude_rule_vetoes_even_matching_includes() {
+        let rules = vec![rule("worker", false, false), rule("brute", false, true)];
+        let m = compute_preview(&rules, &procs(), &control());
+        let pids: Vec<i32> = m.iter().map(|x| x.pid).collect();
+        assert_eq!(pids, vec![10, 11]);
+    }
+
+    #[test]
+    fn rules_without_includes_match_nothing() {
+        let rules = vec![rule("worker", false, true)];
+        assert_eq!(compute_preview(&rules, &procs(), &control()).len(), 0);
+    }
+
+    #[test]
+    fn snapshot_bincode_roundtrip() {
+        let mut s = crate::collector::Snapshot {
+            seq: 7,
+            history: vec![[1.0, 2.0, 3.0, 4.0]],
+            target: "worker".into(),
+            rules: vec![rule("worker", false, false)],
+            status: crate::collector::TargetStatus::Active(2),
+            psi: crate::procfs::PsiSet::default(),
+            psi_pct: crate::collector::PsiPct::default(),
+            sys_wait: Some(1.5),
+            rss_total: 0,
+            mem_total: 0,
+            mem_avail: 0,
+            runs: Vec::new(),
+            share_cpu: [0.0; 3],
+            share_mem: [0.0; 3],
+            antagonists: Vec::new(),
+            users: Vec::new(),
+            live_ants: Vec::new(),
+            live_users: Vec::new(),
+            live_dt: 1.0,
+            conditions: crate::conditions::CondSummary::default(),
+            collecting: false,
+            cores: 16,
+            collecting_secs: 10.0,
+            rec_secs: 12.0,
+            scanned: 42,
+        };
+        s.runs.push(crate::collector::RunRow {
+            params: "bench.py".into(),
+            roots: vec![1],
+            wall: 10.0,
+            cpu_secs: 5.0,
+            wait_secs: 1.0,
+            wait_pct: Some(20.0),
+            cpu_pct: 50.0,
+            rss: 1000,
+            psi: [1.0, 2.0, 3.0],
+            alive: false,
+            order: 1,
+            users: 2,
+            cf: Some(1.2),
+            cl: Some(10.0),
+            ants: vec![],
+            run_users: vec![],
+        });
+        let bytes =
+            bincode::serde::encode_to_vec(&s, bincode::config::standard()).unwrap();
+        let (out, used) =
+            bincode::serde::decode_from_slice::<Snapshot, _>(&bytes, bincode::config::standard())
+                .unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(out.seq, 7);
+        assert_eq!(out.target, "worker");
+        assert_eq!(out.runs.len(), 1);
+        assert_eq!(out.runs[0].cf, Some(1.2));
+        assert_eq!(out.runs[0].wait_pct, Some(20.0));
+        assert_eq!(out.history, [[1.0, 2.0, 3.0, 4.0]]);
     }
 }
