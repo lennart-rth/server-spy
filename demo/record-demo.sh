@@ -11,6 +11,9 @@
 #   SPY=path/to/server-spy                # default ../target/release/server-spy
 #   ANT_ARGS="--cpu N --mem N --io N"     # default full demo load
 #   NO_EMBED=1                            # skip re-embedding into site/index.html
+#                                         # and regenerating site/demo.svg
+#
+# Regenerating site/demo.svg needs svg-term-cli (npm install -g svg-term-cli).
 set -e
 
 cd "$(dirname "$0")/.."
@@ -151,4 +154,29 @@ html = html.replace(m.group(0), f'data:application/x-asciicast;base64,{b64}')
 open(path, 'w').write(html)
 print(f"record-demo: embedded {len(b64)} bytes into {path}")
 EOF
+    # keep the README's demo.svg in sync with the freshly recorded cast:
+    # svg-term-cli (the tool that always rendered the demo) only reads
+    # asciicast v1/v2, so rewrite the v3 delta timestamps to absolute ones
+    python3 - "$OUT" /tmp/server-spy-demo-v2.cast << 'EOF'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    header = json.loads(f.readline())
+    events = [json.loads(l) for l in f if l.strip()]
+out = [{"version": 2,
+        "width": header.get("term", {}).get("cols") or header.get("width"),
+        "height": header.get("term", {}).get("rows") or header.get("height")}]
+monotonic = all(e[0] >= events[i - 1][0] for i, e in enumerate(events) if i)
+acc = 0.0
+for t, k, d in events:
+    acc += max(0.0, t)
+    out.append([acc if not monotonic else t, k, d])
+with open(dst, "w") as f:
+    for e in out:
+        f.write(json.dumps(e) + "\n")
+print(f"record-demo: cast rewritten to v2 for svg-term ({len(out) - 1} events)")
+EOF
+    svg-term --in /tmp/server-spy-demo-v2.cast --out site/demo.svg \
+        --window --width 180 --height 54 --no-cursor
+    echo "record-demo: regenerated site/demo.svg"
 fi

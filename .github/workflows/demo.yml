@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install tools
         run: |
-          sudo apt-get update && sudo apt-get install -y tmux asciinema python3
+          sudo apt-get update && sudo apt-get install -y tmux asciinema python3 nodejs npm
+          sudo npm install -g svg-term-cli
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release binary
         run: cargo build --release --locked
@@ -30,7 +31,7 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add site/demo.cast site/index.html
+            git add site/demo.cast site/demo.svg site/index.html
             git commit -m "demo: refresh recorded cast"
             git push origin HEAD:${GITHUB_REF_NAME}
             echo "changed=1" >> "$GITHUB_ENV"
