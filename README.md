@@ -7,7 +7,10 @@ Measure how much of the resources your experiment actually gets, and who is stea
 On smaller academic servers where multiple people run jobs, coordination is often hard or not reliable. 
 Use this tool to see exactly how much congestion was on the server while specific runs of yours were active.
 
-[ we will embed a demo video here ]
+## Demo
+
+![Demo](site/demo.svg)
+
 
 # Who is this for
 - Researchers that run time or performance critical experiments on servers with multiple users and no slurm installed.
