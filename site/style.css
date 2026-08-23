@@ -9,8 +9,51 @@
     --accent-dim: #0aa8c9;
     --green: #3fb950;
     --red: #f85149;
+    --nav-bg: rgba(11, 14, 20, 0.9);
+    --term-bg: #0a0d12;
+    --term-fg: #e6edf3;
     --mono: "SFMono-Regular", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
     --serif: Georgia, "Times New Roman", "Noto Serif", serif;
+}
+
+html[data-theme="light"] {
+    --bg: #f6f8fa;
+    --bg-soft: #e9edf2;
+    --panel: #ffffff;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #57606a;
+    --accent: #0969da;
+    --accent-dim: #0550ae;
+    --green: #1a7f37;
+    --red: #cf222e;
+    --nav-bg: rgba(246, 248, 250, 0.92);
+}
+
+/* light mode: tone down the neon cyan glows so only a soft blue remains */
+html[data-theme="light"] .hero {
+    background:
+        radial-gradient(ellipse 70% 50% at 50% -10%, rgba(9, 105, 218, 0.06), transparent),
+        var(--bg);
+}
+html[data-theme="light"] .hero h1 {
+    text-shadow: 0 0 40px rgba(9, 105, 218, 0.18);
+}
+html[data-theme="light"] .hero .sub .catch {
+    text-shadow: none;
+}
+html[data-theme="light"] .btn:hover {
+    background: rgba(9, 105, 218, 0.07);
+    box-shadow: 0 0 24px rgba(9, 105, 218, 0.12);
+}
+html[data-theme="light"] .card .icon img {
+    filter: invert(33%) sepia(97%) saturate(2404%) hue-rotate(199deg) brightness(91%) contrast(101%);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+    transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -31,7 +74,7 @@ body {
 
 nav {
     position: sticky; top: 0; z-index: 10;
-    background: rgba(11, 14, 20, 0.9);
+    background: var(--nav-bg);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--border);
 }
@@ -60,6 +103,33 @@ nav .links a {
     font-size: 14px;
 }
 nav .links a:hover { color: var(--accent); }
+.theme-toggle {
+    margin-left: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: all 0.15s ease;
+}
+.theme-toggle:hover { color: var(--accent); border-color: var(--accent-dim); }
+.theme-toggle svg {
+    width: 17px;
+    height: 17px;
+    fill: currentColor;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+html[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+html[data-theme="light"] .theme-toggle .icon-sun { display: none; }
 
 /* ---------- hero ---------- */
 
@@ -101,6 +171,104 @@ nav .links a:hover { color: var(--accent); }
     color: var(--text);
     letter-spacing: 0.3px;
 }
+.hero .sub .catch {
+    display: block;
+    font-size: 27px;
+    font-weight: 700;
+    line-height: 1.4;
+    letter-spacing: -0.3px;
+    color: var(--text);
+    margin-top: 26px;
+    text-shadow: 0 0 30px rgba(0, 217, 255, 0.12);
+}
+.scope-wrap {
+    max-width: 780px;
+    margin: 0 auto;
+}
+.scope {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--panel);
+    text-align: left;
+    font-size: 15.5px;
+}
+.scope th {
+    padding: 11px 24px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(0, 217, 255, 0.05);
+    border-bottom: 1px solid var(--border);
+}
+.scope td {
+    padding: 16px 24px;
+    vertical-align: top;
+    color: var(--muted);
+    width: 50%;
+}
+.scope th + th,
+.scope td + td {
+    border-left: 1px solid var(--border);
+}
+.scope ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.scope li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 11px;
+}
+.scope li:last-child {
+    margin-bottom: 0;
+}
+/* CSS-drawn markers: a check and a cross, no emoji glyphs */
+.scope .mark {
+    flex: none;
+    position: relative;
+    width: 13px;
+    height: 13px;
+    margin-top: 4px;
+}
+.scope .yes-mark::after {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: 1px;
+    width: 5px;
+    height: 9px;
+    border: solid var(--green);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+.scope .no-mark::before,
+.scope .no-mark::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--red);
+}
+.scope .no-mark::before {
+    transform: rotate(45deg);
+}
+.scope .no-mark::after {
+    transform: rotate(-45deg);
+}
+.scope b {
+    color: var(--text);
+    font-weight: 600;
+}
 .hero .cta { margin-top: 100px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 .btn {
     display: inline-block;
@@ -127,7 +295,7 @@ nav .links a:hover { color: var(--accent); }
     padding: 0 24px;
 }
 .tui-shell {
-    background: #0a0d12;
+    background: var(--term-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 60px rgba(0, 217, 255, 0.05);
@@ -160,7 +328,7 @@ nav .links a:hover { color: var(--accent); }
     font-family: var(--mono);
     font-size: 12px;
     line-height: 1.25;
-    color: #e6edf3;
+    color: var(--term-fg);
     padding: 0 12px 12px;
     display: inline-block;
     min-width: 100%;
@@ -171,7 +339,7 @@ nav .links a:hover { color: var(--accent); }
 
 .cast-wrap {
     max-width: 1180px;
-    margin: 40px auto 0;
+    margin: 40px auto 80px;
     padding: 0 24px;
 }
 .cast-wrap .ap-wrapper,
@@ -245,13 +413,13 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); b
     gap: 12px;
     margin: 0 auto;
     max-width: 760px;
-    background: #0a0d12;
+    background: var(--term-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 14px 16px;
     font-family: var(--mono);
     font-size: 13.5px;
-    color: #e6edf3;
+    color: var(--term-fg);
 }
 .one-liner .prompt {
     color: var(--green);

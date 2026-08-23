@@ -21,7 +21,7 @@
   "description": "A terminal tool that measures CPU, memory and I/O congestion on shared servers and shows how much each of your experiment runs was slowed down by it.",
   "url": "https://lennart-rth.github.io/server-spy/",
   "codeRepository": "https://github.com/lennart-rth/server-spy",
-  "license": "https://opensource.org/licenses/MIT",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "version": "0.1.2",
   "softwareVersion": "0.1.2",
   "operatingSystem": "Linux",
@@ -37,6 +37,10 @@
 </script>
 <!-- machine-meta:end -->
 <link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
+<script>
+  try { var savedTheme = localStorage.getItem("theme"); } catch (e) { savedTheme = null; }
+  document.documentElement.dataset.theme = savedTheme || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+</script>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="style.css?v=0.1.2">
 </head>
@@ -50,6 +54,10 @@
       <a href="#install">Install</a>
       <a href="#quickstart">Quick start</a>
       <a href="https://github.com/lennart-rth/server-spy">GitHub ↗</a>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-12V3m0 18v-2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M3 12h2m14 0h2M4.2 19.8l1.4-1.4m12.8-12.8 1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
     </div>
   </div>
 </nav>
@@ -59,7 +67,7 @@
     <h1>server-spy</h1>
     <p class="sub">
       <span class="quote"><q>If you can't beat them, join them.</q></span>
-      Measure how much resources your experiment actually gets,<br>and who is stealing it from you.
+      <span class="catch">Measure how much resources your experiment actually gets, and who is stealing it from you.</span>
     </p>
     <div class="cta">
       <a class="btn solid" href="#install">Install</a>
@@ -70,7 +78,7 @@
       <img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version">
       <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release">
       <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status">
-      <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license">
+      <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="GPLv3 license">
     </div>
   </div>
 </header>
@@ -79,26 +87,28 @@
   <div id="demo-player"></div>
 </div>
 
-<section id="features">
+<section class="alt" id="features">
   <div class="container">
     <div class="sec-head">
       <div class="kicker">Features</div>
       <h2>Gain confidence about the conditions and comparability of your experiments.</h2>
-      <p>server-spy classifies your experiment processes, then monitors everything that happens around them to ensure a fair environment for comparison.</p>
     </div>
     <div class="cards">
       <div class="card">
         <div class="icon"><img src="target_407061.png" alt=""></div>
         <h3>Auto-detect your experiment runs</h3>
-        <p>Set a regex filter to find all processes related to your experment. Monitor how server resource conditions change for each run and qunatify how much each run gets affected.</p>
+        <ul>
+          <li>Set regex filter and find all processes related to your experment.</li>
+          <li>Monitor how server resource conditions change for each run and qunatify how much each run gets affected.</li>
+        </ul>
       </div>
       <div class="card">
         <div class="icon icon-sm"><img src="electric_11869452.png" alt=""></div>
-        <h3>Clear and interpretable novel metrics</h3>
+        <h3>Clear and interpretable metrics</h3>
         <ul>
-          <li><strong>SCI:</strong> Single congestion score from CPU, Mem and I/O pressure.</li>
-          <li><strong>CF</strong>  Fraction of slow-down compared to same run under idle conditions.</li>
+          <li><strong>Congestion Score:</strong> CPU, Mem and I/O pressure in one value.</li>
           <li><strong>Sched. wait</strong> How long a process is queued vs. run.</li>
+          <li>Focusing only on the cores your experiments actually runs on.</li>
         </ul>
       </div>
       <div class="card">
@@ -109,7 +119,10 @@
       <div class="card">
         <div class="icon"><img src="timer_709717.png" alt=""></div>
         <h3>Who is slowing you down</h3>
-        <p>Find out which other processes interfered with your experiment the most and which specific runs got disturbed the most<br>Also the other way around: which user or process interfered with any given experiment run of yours.</p>
+        <ul>
+          <li>Find out which of your runs got affected the most.</li>
+          <li>Find out which users or processes affected you the most.</li>
+        </ul>
       </div>
       <div class="card">
         <div class="icon"><img src="summation_13111352.png" alt=""></div>
@@ -121,6 +134,42 @@
         <h3>Detach &amp; reattach</h3>
         <p>The daemon keeps recording in the background. Close the TUI, come back later, attach again.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="scope">
+  <div class="container">
+    <div class="sec-head">
+      <div class="kicker">Scope</div>
+    </div>
+    <div class="scope-wrap">
+      <table class="scope">
+        <thead>
+          <tr>
+            <th>What it's not</th>
+            <th>What it is</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <ul>
+                <li class="no"><span class="mark no-mark" aria-hidden="true"></span><span>doesn't render SLURM or Kubernetes irrelevant</span></li>
+                <li class="no"><span class="mark no-mark" aria-hidden="true"></span><span>no alternative to perf, bpftrace, ...</span></li>
+                <li class="no"><span class="mark no-mark" aria-hidden="true"></span><span>not for in-depth analysis of single-run experiments</span></li>
+              </ul>
+            </td>
+            <td>
+              <ul>
+                <li class="yes"><span class="mark yes-mark" aria-hidden="true"></span><span>for smaller busy academic servers that don't use SLURM etc.</span></li>
+                <li class="yes"><span class="mark yes-mark" aria-hidden="true"></span>give easy and fast interpetation on who and what is slowing you down<span></span></li>
+                <li class="yes"><span class="mark yes-mark" aria-hidden="true"></span><span>make multiple sequential experiments on the same server comparable</span></li>
+              </ul>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </section>
@@ -175,7 +224,7 @@
 
 <footer>
   <div class="container">
-    <p>MIT licensed.</p>
+    <p>GPL-3.0 licensed.</p>
     <p class="mono"><a href="https://github.com/lennart-rth/server-spy">github.com/lennart-rth/server-spy</a></p>
   </div>
 </footer>
@@ -230,6 +279,14 @@
     preload: true,
     poster: 'data:text/plain,server-spy - a live session on a shared server'
   });
+</script>
+
+<script>
+document.getElementById("theme-toggle").addEventListener("click", function () {
+  var next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch (e) {}
+});
 </script>
 
 </body>

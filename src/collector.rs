@@ -202,6 +202,9 @@ pub struct Snapshot {
     pub conditions: CondSummary,
     pub collecting: bool,
     pub cores: u64,
+    /// Number of cores our runs were actually scheduled on (rolling window);
+    /// 0 means "not scoped" — CPU values are machine-wide.
+    pub our_cores: u32,
     pub collecting_secs: f64,
     pub rec_secs: f64,
     pub scanned: usize,
@@ -291,7 +294,15 @@ pub struct Collector {
     shared_procs: Option<Arc<Mutex<Vec<Process>>>>,
     scan_cache: procfs::ScanCache,
     conditions: Option<(usize, CondSummary)>,
+    /// Rolling window of the cores our run trees were actually scheduled on
+    /// (core -> seq of the last poll where it was seen). Empty until a run
+    /// exists; CPU values stay machine-wide then.
+    used_cores: HashMap<u32, u64>,
 }
+
+/// How many polls a core stays in the "our cores" set after our runs last
+/// touched it.
+const USED_CORES_WINDOW: u64 = 10;
 
 impl Collector {
     pub fn new(interval: Duration, control: Arc<Control>, history_len: usize) -> Self {
@@ -321,6 +332,7 @@ impl Collector {
             shared_procs: None,
             scan_cache: procfs::ScanCache::new(),
             conditions: None,
+            used_cores: HashMap::new(),
         }
     }
 
@@ -603,7 +615,25 @@ impl Collector {
 
         let hz = self.sys.clk_tck;
         let cores = self.sys.cores;
-        let denom = (dt * hz as f64 * cores as f64).max(1.0);
+
+        // The cores our runs were actually scheduled on: sampled per poll
+        // (process-level stat, plus per-thread for our own trees) and rolled
+        // over USED_CORES_WINDOW polls so a single poll doesn't shrink the
+        // set. Empty (no runs yet) -> CPU values stay machine-wide.
+        let mut seen_cores: HashSet<u32> = HashSet::new();
+        for pid in &tree {
+            if let Some(p) = by_pid.get(pid) {
+                seen_cores.insert(p.last_cpu);
+            }
+            for c in procfs::read_thread_cpus(*pid) {
+                seen_cores.insert(c);
+            }
+        }
+        update_used_cores(&mut self.used_cores, &seen_cores, self.seq, USED_CORES_WINDOW);
+        let our_cores = if tree.is_empty() { 0 } else { self.used_cores.len() as u32 };
+        let cpu_denom_cores = if our_cores > 0 { our_cores as u64 } else { cores };
+
+        let denom = (dt * hz as f64 * cpu_denom_cores as f64).max(1.0);
         let tree_ticks: u64 = tree
             .iter()
             .map(|pid| {
@@ -617,7 +647,19 @@ impl Collector {
             .iter()
             .map(|p| delta_ticks(&self.pid_last, p.pid, p.ticks))
             .sum();
-        let cpu_used = all_ticks as f64 / denom * 100.0;
+        // Others counted against "our cores": processes whose last-CPU is in
+        // the rolling used set (estimate: last-CPU is a per-poll sample).
+        let others_ticks: u64 = if our_cores > 0 {
+            procs
+                .iter()
+                .filter(|p| !tree.contains(&p.pid))
+                .filter(|p| self.used_cores.contains_key(&p.last_cpu))
+                .map(|p| delta_ticks(&self.pid_last, p.pid, p.ticks))
+                .sum()
+        } else {
+            all_ticks.saturating_sub(tree_ticks)
+        };
+        let cpu_used = (tree_ticks + others_ticks) as f64 / denom * 100.0;
         let cpu_target = tree_ticks as f64 / denom * 100.0;
         let cpu_others = (cpu_used - cpu_target).max(0.0);
         let cpu_idle = (100.0 - cpu_used).max(0.0);
@@ -874,6 +916,7 @@ impl Collector {
             conditions: self.cached_conditions(),
             collecting,
             cores: self.sys.cores,
+            our_cores,
             collecting_secs: self.collecting_secs,
             rec_secs: self.started.elapsed().as_secs_f64(),
             scanned: procs.len(),
@@ -998,6 +1041,20 @@ pub(crate) fn self_chain(pid: i32) -> HashSet<i32> {
 /// The live "Other processes / users" lists. Every present non-owned process
 /// is listed (idle ones with cpu_secs 0), sorted by last-interval CPU use, so
 /// nothing blinks in and out of the TUI as processes go idle.
+/// Add the cores seen this poll to the rolling "our cores" set, dropping
+/// cores our runs haven't touched in the last `window` polls.
+fn update_used_cores(
+    used: &mut HashMap<u32, u64>,
+    seen: &HashSet<u32>,
+    seq: u64,
+    window: u64,
+) {
+    for c in seen {
+        used.insert(*c, seq);
+    }
+    used.retain(|_, last| seq.saturating_sub(*last) < window);
+}
+
 fn build_live_lists(
     active: &HashMap<i32, ActivePid>,
     wait: &HashMap<i32, u64>,
@@ -1278,6 +1335,7 @@ mod tests {
             start_secs: 0.0,
             demo_user: String::new(),
             tty: 0,
+            last_cpu: 0,
         }
     }
 
@@ -1501,6 +1559,7 @@ mod tests {
             start_secs: 0.0,
             demo_user: "alice".into(),
             tty: 0,
+            last_cpu: 0,
         };
         let (user, comm) = active_identity(true, &p, &accum, &cache);
         assert_eq!(user, "alice");
@@ -1566,6 +1625,25 @@ mod tests {
         assert_eq!(old.wall, 10.0);
         assert_eq!(old.cpu_secs, 5.0);
         assert_eq!(old.ants.len(), 1, "per-run attribution is preserved");
+    }
+
+    #[test]
+    fn used_cores_rolls_and_evicts() {
+        let mut used = HashMap::new();
+        update_used_cores(&mut used, &HashSet::from([0u32, 1]), 1, 10);
+        assert_eq!(used.len(), 2);
+        // a poll that only touches core 1 keeps core 0 while it is inside the window
+        update_used_cores(&mut used, &HashSet::from([1u32]), 5, 10);
+        assert_eq!(used.len(), 2, "cores stay for the whole window");
+        // once a core has been unseen for >= window polls it is evicted
+        update_used_cores(&mut used, &HashSet::from([1u32]), 12, 10);
+        assert_eq!(used.len(), 1);
+        assert!(used.contains_key(&1));
+        assert!(!used.contains_key(&0));
+        // an empty set stays empty; a fresh core joins
+        update_used_cores(&mut used, &HashSet::from([7u32]), 13, 10);
+        assert_eq!(used.len(), 2);
+        assert!(used.contains_key(&7));
     }
 
     #[test]
@@ -1687,7 +1765,7 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
         None => "—".to_string(),
     };
     out.push_str(&format!(
-        "sys now: sched wait {}  sci {}  rss total {}  used {}  free {}\n",
+        "sys now: sched wait {}  ci {}  rss total {}  used {}  free {}\n",
         sys_wait,
         fmt_pct(system_congestion_index(
             s.psi_pct.cpu_some,
@@ -1783,7 +1861,7 @@ pub fn snapshot_text(s: &Snapshot, sys: &SysInfo) -> String {
         out.push_str("  no completed runs yet\n");
     } else {
         for (name, d) in [
-            ("sci", &c.sci),
+            ("ci", &c.ci),
             ("cl", &c.cl),
             ("wait%", &c.wait),
         ] {

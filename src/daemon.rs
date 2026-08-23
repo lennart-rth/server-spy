@@ -13,7 +13,7 @@ use crate::procfs::Process;
 
 pub use crate::collector::exe_name;
 
-pub const PROTOCOL_VERSION: u8 = 12;
+pub const PROTOCOL_VERSION: u8 = 13;
 
 #[cfg(target_env = "gnu")]
 unsafe extern "C" {
@@ -553,6 +553,7 @@ mod tests {
             start_secs: 0.0,
             demo_user: String::new(),
             tty: 0,
+            last_cpu: 0,
         }
     }
 
@@ -692,6 +693,7 @@ mod tests {
             conditions: crate::conditions::CondSummary::default(),
             collecting: false,
             cores: 16,
+            our_cores: 0,
             collecting_secs: 10.0,
             rec_secs: 12.0,
             scanned: 42,

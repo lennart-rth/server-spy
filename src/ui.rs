@@ -265,7 +265,7 @@ impl App {
             scroll: 0,
             uscroll: 0,
             ascroll: 0,
-            runs_sort: (7, false),
+            runs_sort: (5, false),
             users_sort: (2, false),
             ants_sort: (3, false),
             runs_area: Rect::default(),
@@ -926,7 +926,7 @@ fn run_attr(r: &RunRow) -> Option<(f64, f64, f64)> {
 
 /// Per-run System Congestion Index: the run's PSI penalties + scheduler wait
 /// compressed into the same saturating 0-100 index as the Live gauge.
-fn run_sci(r: &RunRow) -> f64 {
+fn run_ci(r: &RunRow) -> f64 {
     system_congestion_index(r.psi[0], r.psi[1], r.psi[2], r.wait_pct.unwrap_or(0.0))
 }
 
@@ -1619,10 +1619,10 @@ fn draw_browser(f: &mut Frame, app: &mut App) {
 }
 
 /// Splits the middle-left column height among congestion (17), utilization
-/// (12) and statistics (7). Each pane keeps its content minimum and receives
+/// (12) and statistics (8). Each pane keeps its content minimum and receives
 /// an equal share of any excess height (remainder goes to congestion).
 fn left_col_heights(h: u16) -> [u16; 3] {
-    let mins = [17u16, 12, 7];
+    let mins = [17u16, 12, 8];
     let sum: u16 = mins.iter().sum();
     if h <= sum {
         return mins;
@@ -1638,7 +1638,7 @@ fn draw_middle(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let cols =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(area);
+        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area);
     // Each pane keeps its content minimum; any excess height is shared
     // equally among all three.
     let [h0, h1, h2] = left_col_heights(cols[0].height);
@@ -1677,7 +1677,7 @@ fn draw_psi(f: &mut Frame, app: &mut App, area: Rect) {
     .split(inner);
     let items = [
         (
-            "congestion (sci)",
+            "congestion",
             system_congestion_index(
                 s.psi_pct.cpu_some,
                 s.psi_pct.mem_some,
@@ -1830,11 +1830,14 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
+    // header, up to three metric rows, a spacer, then the latex copy row; the
+    // metric column grows so the table spans the full pane width
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Min(1),
         Constraint::Length(1),
     ])
     .split(inner);
@@ -1846,8 +1849,11 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(format!("{:>7}", "max"), Style::default().fg(Color::Cyan).bold()),
     ]);
     f.render_widget(Paragraph::new(header), rows[0]);
-    let mut i = 1;
-    for (name, d) in [("sci", &c.sci), ("cl", &c.cl), ("wait%", &c.wait)] {
+    for (i, (name, d)) in [
+        (1usize, ("ci", &c.ci)),
+        (2, ("cl", &c.cl)),
+        (3, ("wait%", &c.wait)),
+    ] {
         if let Some(d) = d {
             let line = Line::from(vec![
                 Span::styled(format!("{name:<7}"), Style::default().fg(Color::White)),
@@ -1866,12 +1872,11 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ]);
             f.render_widget(Paragraph::new(line), rows[i]);
-            i += 1;
         }
     }
-    // one left-aligned sentence spanning the bottom; the bracketed words are
-    // the clickable copy buttons
-    let btn_row = rows[4];
+    // one left-aligned sentence at the bottom; the bracketed words are the
+    // clickable copy buttons
+    let btn_row = rows[5];
     let line = Line::from(vec![
         Span::styled(
             "copy latex report ",
@@ -2105,7 +2110,7 @@ fn draw_help_middle(f: &mut Frame, area: Rect) {
         return;
     }
     let cols =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(area);
+        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area);
     let [h0, h1, h2] = left_col_heights(cols[0].height);
     let left = Layout::vertical([
         Constraint::Length(h0),
@@ -2150,7 +2155,7 @@ fn draw_help_congestion(f: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let items = [
-        ("congestion (sci)", "0-100 saturating index of current system pressure"),
+        ("congestion", "0-100 saturating index of current system pressure"),
         ("cpu pressure", "PSI cpu stalls in the last interval"),
         ("mem pressure", "PSI memory stalls in the last interval"),
         ("io pressure", "PSI io stalls in the last interval"),
@@ -2209,14 +2214,49 @@ fn draw_help_util(f: &mut Frame, area: Rect) {
         f.render_widget(Paragraph::new(help_line_w("↑", title, text, binner.width as usize)), binner);
     }
     f.render_widget(
-        Paragraph::new(help_line_w(
-            "↑",
-            "legend",
-            "green = target workers · red = other processes",
-            rows[3].width as usize,
-        )),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "↑ ",
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+            Span::styled("legend", Style::default().fg(Color::White).bold()),
+            Span::styled(
+                " — green = target workers · red = other processes",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])),
         rows[3],
     );
+    f.render_widget(
+        Paragraph::new(help_line_w(
+            "↑",
+            "scope",
+            "cpu% counts only the cores your runs actually use",
+            rows[3].width as usize,
+        )),
+        Rect::new(rows[3].x, rows[3].y + 1, rows[3].width, rows[3].height.saturating_sub(1)),
+    );
+}
+
+
+/// Runs-table column widths: every fixed column keeps its size and the params
+/// column absorbs the remaining pane width, so `state` sits flush at the right
+/// edge and longer command lines stay visible. One entry per header column.
+fn runs_widths(total: u16) -> Vec<Constraint> {
+    let fixed: u16 = 12 + 6 + 6 + 6 + 8 + 8 + 8 + 7 + 8;
+    let params = total.saturating_sub(fixed + 9).max(20);
+    vec![
+        Constraint::Length(params),
+        Constraint::Length(12),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(8),
+    ]
 }
 
 fn draw_help_runs(f: &mut Frame, area: Rect) {
@@ -2224,24 +2264,12 @@ fn draw_help_runs(f: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let names = [
-        "params", "sci", "cpu%", "mem%", "io%", "cf", "util%", "wait%", "wall", "usr", "state",
+        "params", "congestion", "cpu%", "mem%", "io%", "wait%", "util%", "wall", "usr", "state",
     ];
     let header = Row::new(names.iter().map(|h| h.to_string()).collect::<Vec<String>>())
         .style(Style::default().fg(Color::Cyan).bold());
-    let widths = [
-        Constraint::Min(20),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Length(8),
-    ];
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    let widths = runs_widths(rows[0].width);
     f.render_widget(
         Table::new(Vec::<Row>::new(), widths).header(header),
         rows[0],
@@ -2251,22 +2279,17 @@ fn draw_help_runs(f: &mut Frame, area: Rect) {
     for (head, text) in [
         ("params", "command line of the experiment run"),
         (
-            "sci",
-            "run congestion index (0-100): the run's psi pressures + scheduler wait, compressed into one saturating number — 0 = idle, 50 = half saturated",
+            "congestion",
+            "congestion index (0-100): the run's psi pressures + scheduler wait, compressed into one saturating number — 0 = idle, 50 = half saturated",
         ),
         ("cpu%", "share of the run's congestion caused by CPU"),
         ("mem%", "share of the run's congestion caused by memory"),
         ("io%", "share of the run's congestion caused by io"),
         (
-            "cf",
-            "congestion factor: how many times longer the run took than on an empty server",
-        ),
-        ("", "     · 1 = clean · 1.5 = 50% of the time stolen · 2 = twice as long"),
-        ("util%", "how busy the run's processes are on their cores"),
-        (
             "wait%",
             "runqueue wait vs CPU work — 100% means the run waited just as long as it actually worked",
         ),
+        ("util%", "how busy the run's processes are, scaled to the cores your runs use"),
         ("wall", "total wall-clock time of the run"),
         ("usr", "max other users active during the run"),
         ("state", "◔ running · ✓ finished"),
@@ -2302,7 +2325,7 @@ fn draw_help_lists(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let cols = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(area);
+    let cols = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area);
     let ublock = Block::bordered().title(Line::from(vec![
         Span::styled(" Other users ", Style::default()),
         Span::styled(" [overall] [live] ", Style::default().fg(Color::DarkGray)),
@@ -2322,7 +2345,7 @@ fn draw_help_lists(f: &mut Frame, area: Rect) {
         Constraint::Length(8),
     ];
     f.render_widget(
-        Table::new(Vec::<Row>::new(), uwidths).header(uheader),
+        Table::new(Vec::<Row>::new(), uwidths).header(uheader).flex(Flex::Start),
         urows[0],
     );
     let uw = urows[1].width as usize;
@@ -2517,7 +2540,7 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sorted: Vec<&RunRow> = s.runs.iter().collect();
     sort_runs(&mut sorted, app.runs_sort);
     let mut headers: Vec<String> = [
-        "params", "sci", "cpu%", "mem%", "io%", "cf", "util%", "wait%", "wall", "usr", "state",
+        "params", "congestion", "cpu%", "mem%", "io%", "wait%", "util%", "wall", "usr", "state",
     ]
     .iter()
     .map(|h| h.to_string())
@@ -2528,22 +2551,10 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         if app.runs_sort.1 { " ▲" } else { " ▼" }
     );
     let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
-    let widths = [
-        Constraint::Min(20),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Length(8),
-    ];
+    let widths = runs_widths(table_area.width);
     let [_sel, columns_area] = Layout::horizontal([Constraint::Length(0), Constraint::Fill(0)])
         .areas(Rect::new(0, 0, table_area.width, 1));
-    let col_rects = Layout::horizontal(widths)
+    let col_rects = Layout::horizontal(widths.clone())
         .flex(Flex::Start)
         .spacing(1)
         .split(columns_area);
@@ -2590,8 +2601,8 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
                     },
                 )),
                 Cell::from(Span::styled(
-                    fmt_pct(run_sci(r)),
-                    fg(Style::default().fg(sev(run_sci(r)))),
+                    fmt_pct(run_ci(r)),
+                    fg(Style::default().fg(sev(run_ci(r)))),
                 )),
                 Cell::from(Span::styled(
                     match run_attr(r) {
@@ -2623,17 +2634,6 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
                         None => Style::default().fg(Color::DarkGray),
                     }),
                 )),
-                Cell::from(Span::styled(
-                    match r.cf {
-                        Some(v) => format!("{v:.2}"),
-                        None => "—".to_string(),
-                    },
-                    fg(match r.cf {
-                        Some(v) => Style::default().fg(sev_cf(v)),
-                        None => Style::default().fg(Color::DarkGray),
-                    }),
-                )),
-                Cell::from(Span::raw(fmt_pct(r.cpu_pct))),
                 Cell::from(match r.wait_pct {
                     Some(p) => Span::styled(fmt_pct(p), fg(Style::default().fg(sev(p)))),
                     None => Span::styled(
@@ -2641,6 +2641,7 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
                         fg(Style::default().fg(Color::DarkGray)),
                     ),
                 }),
+                Cell::from(Span::raw(fmt_pct(r.cpu_pct))),
                 Cell::from(Span::raw(fmt_secs(r.wall))),
                 Cell::from(Span::styled(
                     r.users.to_string(),
@@ -2748,11 +2749,22 @@ fn tab_title(
     (Line::from(spans), (tabs[0], tabs[1]))
 }
 
+/// The core count cpu util% / wait% are measured against: the cores our runs
+/// actually use when scoping is active (Snapshot.our_cores), the whole
+/// machine otherwise (no runs yet, or a loaded snapshot).
+fn cpu_cores(s: &Snapshot) -> f64 {
+    if s.our_cores > 0 {
+        s.our_cores as f64
+    } else {
+        s.cores as f64
+    }
+}
+
 fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let cols = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(area);
+    let cols = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area);
     let (utitle, user_tabs) = tab_title("Other users", cols[0].x + 1, cols[0].y, app.live, app.focus == 1);
     let ublock = Block::bordered().title(utitle);
     let uinner = ublock.inner(cols[0]);
@@ -2816,9 +2828,9 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         let denom = if app.live {
-            (s.live_dt * s.cores as f64).max(1.0)
+            (s.live_dt * cpu_cores(s)).max(1.0)
         } else {
-            (s.collecting_secs * s.cores as f64).max(1.0)
+            (s.collecting_secs * cpu_cores(s)).max(1.0)
         };
         let total_cpu: f64 = sorted.iter().map(|u| u.cpu_secs).sum();
         let mut headers: Vec<String> = [
@@ -2923,7 +2935,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(7),
             Constraint::Length(8),
         ];
-        let table = Table::new(rows, widths).header(header);
+        let table = Table::new(rows, widths).header(header).flex(Flex::Start);
         f.render_widget(table, users_area);
         let drawn = (sorted.len().saturating_sub(app.uscroll)).min(visible);
         if let Some((mx, my)) = app.mouse
@@ -2985,9 +2997,9 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
     let cmd_w = (ainner.width as usize).saturating_sub(53);
     let denom = if app.live {
-        (s.live_dt * s.cores as f64).max(1.0)
+        (s.live_dt * cpu_cores(s)).max(1.0)
     } else {
-        (s.collecting_secs * s.cores as f64).max(1.0)
+        (s.collecting_secs * cpu_cores(s)).max(1.0)
     };
     let rows: Vec<Row> = sorted
         .iter()
@@ -3135,18 +3147,6 @@ fn sev(pct: f64) -> Color {
     }
 }
 
-/// Color grade for the Congestion Factor: 1.0 is a clean run; the scheduler
-/// noise floor on a quiet box is ~1-3%, hence the wide green band.
-fn sev_cf(cf: f64) -> Color {
-    if cf >= 1.5 {
-        Color::Red
-    } else if cf >= 1.1 {
-        Color::Yellow
-    } else {
-        Color::Green
-    }
-}
-
 fn trunc(s: &str, n: usize) -> String {
     let count = s.chars().count();
     if count <= n {
@@ -3174,15 +3174,14 @@ fn sort_runs(rows: &mut Vec<&RunRow>, (col, asc): (usize, bool)) {
     rows.sort_by(|a, b| {
         let ord = match col {
             0 => a.params.cmp(&b.params),
-            1 => run_sci(a).total_cmp(&run_sci(b)),
+            1 => run_ci(a).total_cmp(&run_ci(b)),
             2 => attr_share(a, 0).total_cmp(&attr_share(b, 0)),
             3 => attr_share(a, 1).total_cmp(&attr_share(b, 1)),
             4 => attr_share(a, 2).total_cmp(&attr_share(b, 2)),
-            5 => cmp_opt_f64(a.cf, b.cf),
+            5 => cmp_opt_f64(a.wait_pct, b.wait_pct),
             6 => a.cpu_pct.total_cmp(&b.cpu_pct),
-            7 => cmp_opt_f64(a.wait_pct, b.wait_pct),
-            8 => a.wall.total_cmp(&b.wall),
-            9 => a.users.cmp(&b.users),
+            7 => a.wall.total_cmp(&b.wall),
+            8 => a.users.cmp(&b.users),
             _ => a.alive.cmp(&b.alive),
         };
         if asc {
@@ -3353,7 +3352,7 @@ mod tests {
         let b = run(Some(50.0), 2.0);
         let c = run(None, 3.0);
         let mut rows = vec![&a, &c, &b];
-        sort_runs(&mut rows, (7, false));
+        sort_runs(&mut rows, (5, false));
         assert_eq!(rows[0].wait_pct, Some(50.0));
         assert_eq!(rows[1].wait_pct, Some(5.0));
         assert_eq!(rows[2].wait_pct, None);
@@ -3364,24 +3363,24 @@ mod tests {
         let a = run(Some(5.0), 1.0);
         let b = run(Some(50.0), 2.0);
         let mut rows = vec![&b, &a];
-        sort_runs(&mut rows, (7, true));
+        sort_runs(&mut rows, (5, true));
         assert_eq!(rows[0].wait_pct, Some(5.0));
     }
 
     #[test]
-    fn runs_sort_by_cf_puts_none_last_ascending() {
+    fn runs_sort_by_wait_puts_none_last_ascending() {
         let mut a = run(None, 0.0);
-        a.cf = Some(2.5);
+        a.wait_pct = Some(2.5);
         let mut b = run(None, 0.0);
-        b.cf = None;
+        b.wait_pct = None;
         let mut rows = vec![&b, &a];
         sort_runs(&mut rows, (5, true));
-        assert_eq!(rows[0].cf, None);
-        assert_eq!(rows[1].cf, Some(2.5));
+        assert_eq!(rows[0].wait_pct, None);
+        assert_eq!(rows[1].wait_pct, Some(2.5));
     }
 
     #[test]
-    fn runs_sort_by_sci() {
+    fn runs_sort_by_ci() {
         let a = run(Some(1.0), 1.0);
         let b = run(Some(1.0), 9.0);
         let mut rows = vec![&a, &b];
@@ -3428,6 +3427,7 @@ mod tests {
             conditions: crate::conditions::CondSummary::default(),
             collecting: false,
             cores: 1,
+            our_cores: 0,
             collecting_secs: 0.0,
             rec_secs: 0.0,
             scanned: 0,
@@ -3485,14 +3485,13 @@ mod tests {
         for token in [
             "Worker Filter",
             "Live congestion",
-            "congestion (sci)",
+            "congestion",
             "Experiment Runs",
             "params",
             "state",
             "click to associate a run",
             "click to associate a user",
             "click to associate a process",
-            "50% of the time stolen",
             "hide help",
         ] {
             assert!(all.contains(token), "help missing {token}");
@@ -3639,13 +3638,13 @@ mod tests {
 
     #[test]
     fn left_panes_share_excess_height_fairly() {
-        // 36 = sum of minimums: no excess
-        assert_eq!(left_col_heights(36), [17, 12, 7]);
-        // 40: excess 4, split equally (remainder to congestion)
-        assert_eq!(left_col_heights(40), [19, 13, 8]);
-        // 50: excess 14 -> each +4, remainder 2 to congestion
-        assert_eq!(left_col_heights(50), [23, 16, 11]);
-        assert_eq!(left_col_heights(30), [17, 12, 7], "never below minimums");
+        // 37 = sum of minimums: no excess
+        assert_eq!(left_col_heights(37), [17, 12, 8]);
+        // 40: excess 3, split equally
+        assert_eq!(left_col_heights(40), [18, 13, 9]);
+        // 50: excess 13 -> each +4, remainder 1 to congestion
+        assert_eq!(left_col_heights(50), [22, 16, 12]);
+        assert_eq!(left_col_heights(30), [17, 12, 8], "never below minimums");
         let rects = Layout::vertical([
             Constraint::Length(19),
             Constraint::Length(13),
@@ -3834,6 +3833,7 @@ mod tests {
             conditions: crate::conditions::CondSummary::default(),
             collecting: false,
             cores: 1,
+            our_cores: 0,
             collecting_secs: 0.0,
             rec_secs: 0.0,
             scanned: 0,
@@ -3866,7 +3866,7 @@ mod tests {
             .unwrap();
         let all = buffer_text(&mut terminal);
         for title in [
-            "params", "sci", "cpu%", "mem%", "io%", "cf", "util%", "wait%", "wall", "usr",
+            "params", "congestion", "cpu%", "mem%", "io%", "wait%", "util%", "wall", "usr",
             "state",
         ] {
             assert!(all.contains(title), "header {title} missing");

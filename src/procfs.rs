@@ -127,6 +127,8 @@ pub struct ProcStat {
     pub starttime: u64,
     pub rss: u64,
     pub tty: u64,
+    /// The CPU the process was last scheduled on (sampled per poll).
+    pub processor: u32,
 }
 
 pub fn parse_stat(line: &str) -> Option<ProcStat> {
@@ -146,6 +148,7 @@ pub fn parse_stat(line: &str) -> Option<ProcStat> {
         starttime: rest[19].parse().ok()?,
         rss: rest[21].parse().ok()?,
         tty: rest[4].parse().ok()?,
+        processor: rest.get(36).and_then(|v| v.parse().ok()).unwrap_or(0),
     })
 }
 
@@ -173,6 +176,26 @@ pub fn read_schedstat(pid: i32) -> Option<(u64, u64)> {
     fs::read_to_string(format!("/proc/{pid}/schedstat"))
         .ok()
         .and_then(|d| parse_schedstat(&d))
+}
+
+/// The CPUs every thread of `pid` was last scheduled on. Only called for the
+/// tracked run trees (our own processes), where the per-thread cost is fine.
+pub fn read_thread_cpus(pid: i32) -> Vec<u32> {
+    let mut cpus = Vec::new();
+    if let Ok(entries) = fs::read_dir(format!("/proc/{pid}/task")) {
+        for entry in entries.flatten() {
+            let tid: i32 = match entry.file_name().to_string_lossy().parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat"))
+                && let Some(st) = parse_stat(&stat)
+            {
+                cpus.push(st.processor);
+            }
+        }
+    }
+    cpus
 }
 
 pub fn read_schedstat_sum(pid: i32) -> Option<(u64, u64)> {
@@ -323,6 +346,8 @@ pub struct Process {
     pub start_secs: f64,
     pub demo_user: String,
     pub tty: u64,
+    /// The CPU this process was last scheduled on (sampled per poll).
+    pub last_cpu: u32,
 }
 
 /// Per-pid data that does not change for the lifetime of a process, cached
@@ -460,6 +485,7 @@ pub fn scan_processes(sys: &SysInfo, boot: f64, cache: &mut ScanCache, demo: boo
             start_secs: boot + st.starttime as f64 / sys.clk_tck as f64,
             demo_user: cache.demo_user.get(&pid).cloned().unwrap_or_default(),
             tty: st.tty,
+            last_cpu: st.processor,
         });
     }
     let alive: std::collections::HashSet<i32> = out.iter().map(|p| p.pid).collect();
@@ -475,7 +501,7 @@ mod tests {
 
     #[test]
     fn parses_stat() {
-        let line = "1234 (worker) S 100 100 100 0 -1 4194560 100 0 0 0 12345 6789 0 0 20 0 4 0 987654 0 4096 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        let line = "1234 (worker) S 100 100 100 0 -1 4194560 100 0 0 0 12345 6789 0 0 20 0 4 0 987654 0 4096 0 0 0 0 0 0 0 0 0 0 0 0 0 0 7 0 0 0 0 0 0 0 0 0 0 0";
         let st = parse_stat(line).unwrap();
         assert_eq!(st.comm, "worker");
         assert_eq!(st.state, 'S');
@@ -484,6 +510,7 @@ mod tests {
         assert_eq!(st.stime, 6789);
         assert_eq!(st.starttime, 987654);
         assert_eq!(st.rss, 4096);
+        assert_eq!(st.processor, 7);
     }
 
     #[test]

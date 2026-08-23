@@ -1,4 +1,4 @@
-<img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version"> <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release"> <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status"> <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
+<img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version"> <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release"> <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status"> <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="license">
 
 # Server-Spy
 *"If you can't beat them, join them"*
@@ -19,7 +19,7 @@ Use this tool to see exactly how much congestion was on the server while specifi
 
 # What it does
 - **Auto-detect your experiment runs** — one row per distinct parameter combination of your worker, with the server resource conditions during that run and how much it got affected
-- **Easy, interpretable metrics** — the SCI and CF scores plus scheduler wait, all explained below
+- **Easy, interpretable metrics** — the CI congestion score and scheduler wait, all explained below
 - **Debug what slows your experiment down** — which system component is the bottleneck on any given machine
 - **Who is slowing you down** — which other users and processes interfered with your experiment the most, which specific runs got disturbed — and the reverse: which user or process interfered with any given experiment run of yours
 - **LaTeX paper-ready export** — statistics table and report template quantifying the server environment and the fairness of resources across all your experiments
@@ -29,16 +29,13 @@ Use this tool to see exactly how much congestion was on the server while specifi
 
 Every run gets a small set of interpretable numbers:
 
-- **SCI — congestion score (0–100)**: a composite of the CPU, memory and
+- **CI — congestion index (0–100)**: a composite of the CPU, memory and
   I/O pressure the server showed while your run was active, combined with
   the scheduler wait. `0` = idle machine, `100` = fully saturated.
-- **CF — congestion factor**: how many times longer the run took than it
-  would have on an empty server. `1` = clean run, `1.5` = 50% of the time
-  stolen, `2` = twice as long. It measures the stolen time (scheduler wait
-  plus memory/I/O stalls) against the run's own CPU work.
-- **Scheduler wait (`wait%`)**: how long your run's processes sat in the
-  CPU runqueue compared to their own work — `100%` means they waited just
-  as long as they actually worked.
+- **Scheduler wait (`wait%`)**: how long your run's processes (and, in the
+  lists, other users' processes) sat in the CPU runqueue compared to their
+  own work — `100%` means they waited just as long as they actually
+  worked.
 - **Attribution split (`cpu%` / `mem%` / `io%`)**: which resource caused
   the run's congestion, so you can tell "my run was slow" from "memory
   pressure slowed my run down".

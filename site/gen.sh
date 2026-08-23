@@ -139,7 +139,7 @@ block = f"""<!-- machine-meta:start -->
   "description": "{desc}",
   "url": "{site}/",
   "codeRepository": "https://github.com/lennart-rth/server-spy",
-  "license": "https://opensource.org/licenses/MIT",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "version": "{version}",
   "softwareVersion": "{version}",
   "operatingSystem": "Linux",

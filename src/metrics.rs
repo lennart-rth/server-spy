@@ -80,19 +80,19 @@ pub fn attribution(wait_secs: f64, mem_stall_secs: f64, io_stall_secs: f64) -> O
     ))
 }
 
-// Weights of the SCI components. sched_wait overlaps with PSI-CPU (both
+// Weights of the CI components. sched_wait overlaps with PSI-CPU (both
 // measure runqueue contention), so it is weighted down to avoid double
 // counting. Tune here; the formula saturates so relative weights matter.
-const SCI_W_CPU: f64 = 1.0;
-const SCI_W_MEM: f64 = 1.0;
-const SCI_W_IO: f64 = 1.0;
-const SCI_W_SCHED: f64 = 0.5;
+const CI_W_CPU: f64 = 1.0;
+const CI_W_MEM: f64 = 1.0;
+const CI_W_IO: f64 = 1.0;
+const CI_W_SCHED: f64 = 0.5;
 
 /// System Congestion Index: saturating 0-100 over the live system-wide
 /// gauges. Unlike raw percentages it does not blow up under extreme load.
 pub fn system_congestion_index(cpu_some: f64, mem_some: f64, io_some: f64, sched_wait: f64) -> f64 {
-    let raw = SCI_W_CPU * cpu_some + SCI_W_MEM * mem_some + SCI_W_IO * io_some
-        + SCI_W_SCHED * sched_wait;
+    let raw = CI_W_CPU * cpu_some + CI_W_MEM * mem_some + CI_W_IO * io_some
+        + CI_W_SCHED * sched_wait;
     100.0 * (1.0 - (-raw / 100.0).exp())
 }
 
@@ -233,19 +233,19 @@ mod tests {
     }
 
     #[test]
-    fn sci_zero_input_is_zero() {
+    fn ci_zero_input_is_zero() {
         assert_eq!(system_congestion_index(0.0, 0.0, 0.0, 0.0), 0.0);
     }
 
     #[test]
-    fn sci_saturates_below_100() {
-        let sci = system_congestion_index(100.0, 100.0, 100.0, 100.0);
-        assert!(sci < 100.0);
-        assert!(sci > 90.0);
+    fn ci_saturates_below_100() {
+        let ci = system_congestion_index(100.0, 100.0, 100.0, 100.0);
+        assert!(ci < 100.0);
+        assert!(ci > 90.0);
     }
 
     #[test]
-    fn sci_is_monotonic() {
+    fn ci_is_monotonic() {
         let low = system_congestion_index(10.0, 0.0, 0.0, 0.0);
         let high = system_congestion_index(50.0, 0.0, 0.0, 0.0);
         assert!(high > low);

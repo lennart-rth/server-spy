@@ -32,7 +32,7 @@ pub struct Dist {
 pub struct CondSummary {
     pub cores: u64,
     pub n: usize,
-    pub sci: Option<Dist>,
+    pub ci: Option<Dist>,
     pub cl: Option<Dist>,
     pub wait: Option<Dist>,
     /// Per-workload wall-time repeat statistics (grouped by cmdline).
@@ -52,7 +52,7 @@ pub struct WorkloadCond {
 pub fn build_conditions(runs: &[RunRow], cores: u64) -> CondSummary {
     let done: Vec<&RunRow> = runs.iter().filter(|r| !r.alive).collect();
     let n = done.len();
-    let sci: Vec<f64> = done
+    let ci: Vec<f64> = done
         .iter()
         .map(|r| {
             system_congestion_index(r.psi[0], r.psi[1], r.psi[2], r.wait_pct.unwrap_or(0.0))
@@ -92,7 +92,7 @@ pub fn build_conditions(runs: &[RunRow], cores: u64) -> CondSummary {
     CondSummary {
         cores,
         n,
-        sci: summarize(&sci),
+        ci: summarize(&ci),
         cl: summarize(&cl),
         wait: summarize(&wait),
         workloads,
@@ -179,7 +179,7 @@ pub fn latex_sentence(c: &CondSummary) -> String {
         c.n, c.cores
     );
     let mut parts: Vec<String> = Vec::new();
-    if let Some(d) = &c.sci {
+    if let Some(d) = &c.ci {
         parts.push(format!(
             "the median composite score of CPU, memory and I/O pressure was {} (typical run-to-run deviation {} \\%)",
             fmt_num(d.median),
@@ -222,7 +222,7 @@ pub fn latex_table(c: &CondSummary) -> String {
     out.push_str("\\label{tab:conditions}\n\\begin{tabular}{lrrrrrrr}\n\\toprule\n");
     out.push_str("Metric & $n$ & Median & MAD & MAD\\% & SD & IQR & Max \\\\\n\\midrule\n");
     for (name, d) in [
-        ("Congestion composite index", &c.sci),
+        ("Congestion composite index", &c.ci),
         ("Time lost to congestion (\\%)", &c.cl),
         ("Scheduler wait (\\%)", &c.wait),
     ] {
@@ -302,9 +302,9 @@ mod tests {
         let cond = build_conditions(&[a, b, c, alive], 16);
         assert_eq!(cond.n, 3, "alive run excluded");
         assert_eq!(cond.cores, 16);
-        let sci = cond.sci.unwrap();
-        assert_eq!(sci.n, 3);
-        assert!(sci.median > 0.0, "w2's psi pushes sci up");
+        let ci = cond.ci.unwrap();
+        assert_eq!(ci.n, 3);
+        assert!(ci.median > 0.0, "w2's psi pushes ci up");
         assert_eq!(cond.cl.unwrap().n, 3);
         assert_eq!(cond.wait.unwrap().n, 3);
         assert_eq!(cond.workloads.len(), 2);
