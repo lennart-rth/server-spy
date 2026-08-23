@@ -92,17 +92,11 @@ curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/insta
 
 ## Uninstall
 
-The quick install (first row above) is just one static binary — no packages
-or system services:
-
 ```sh
 server-spy stop                   # stop the background daemon
 rm ~/.local/bin/server-spy        # or /usr/local/bin/server-spy when installed as root
-rm -rf ~/.local/state/server-spy  # config, log and the first-run marker
+rm -rf ~/.local/state/server-spy  # config and logs 
 ```
-
-`server-spy-*.csv` snapshot files (saved with `s` in the TUI, in the current
-directory) are yours to keep or delete.
 
 | Method | Uninstall command |
 |---|---|
