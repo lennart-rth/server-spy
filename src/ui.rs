@@ -9,7 +9,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseEvent, MouseEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -242,6 +242,7 @@ pub struct App {
     stat_copy_area: Rect,
     stat_table_area: Rect,
     first_run: bool,
+    first_run_rect: Option<Rect>,
     help: bool,
     quit: bool,
 }
@@ -281,7 +282,8 @@ impl App {
             ants_tabs: (Rect::default(), Rect::default()),
             stat_copy_area: Rect::default(),
             stat_table_area: Rect::default(),
-            first_run: first_run_marker_missing(),
+            first_run: first_run_notice_wanted(),
+            first_run_rect: None,
             help: false,
             quit: false,
         }
@@ -962,8 +964,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if app.first_run {
-        mark_first_run_done();
-        app.first_run = false;
+        // Only a click on [ got it ] dismisses the welcome notice; mouse
+        // moves (and clicks elsewhere) leave it up until then.
+        if let Some(pop) = app.first_run_rect
+            && m.kind == MouseEventKind::Down(MouseButton::Left)
+            && in_rect(m.row, m.column, first_run_got_it_rect(pop))
+        {
+            mark_first_run_done();
+            app.first_run = false;
+        }
         return;
     }
     match m.kind {
@@ -1191,7 +1200,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         draw_tooltip(f, text, *x, *y);
     }
     if app.first_run {
-        draw_first_run_popup(f);
+        app.first_run_rect = draw_first_run_popup(f);
     }
 }
 
@@ -1714,6 +1723,12 @@ fn first_run_marker_missing() -> bool {
     !first_run_marker_path().exists()
 }
 
+/// The welcome notice only shows for real users: the demo recording and the
+/// demo/benchmark scenario run with SERVER_SPY_DEMO=1 and must never see it.
+fn first_run_notice_wanted() -> bool {
+    std::env::var("SERVER_SPY_DEMO").is_err() && first_run_marker_missing()
+}
+
 /// Records that the first-run notice was shown (no-op under tests so the
 /// developer's own first-run experience is not consumed by the test suite).
 fn mark_first_run_done() {
@@ -1727,13 +1742,14 @@ fn mark_first_run_done() {
     let _ = std::fs::write(p, "1");
 }
 
-/// First-run welcome overlay pointing new users at the help mode.
-fn draw_first_run_popup(f: &mut Frame) {
+/// First-run welcome overlay pointing new users at the help mode. Returns the
+/// popup rect so clicks can target the [ got it ] button.
+fn draw_first_run_popup(f: &mut Frame) -> Option<Rect> {
     let area = f.area();
     let w = area.width.saturating_sub(4).min(54);
     let h = 9u16;
     if w < 40 || area.height < h + 4 {
-        return;
+        return None;
     }
     let pop = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
     f.render_widget(Clear, pop);
@@ -1743,13 +1759,14 @@ fn draw_first_run_popup(f: &mut Frame) {
     let lines = [
         "Get familiar with the scores and numbers:",
         "press h for an explanation of every metric,",
-        "column and click action. Click anywhere or",
-        "press any key to dismiss.",
+        "column and click action. A mouse move won't",
+        "close this — click [ got it ] or press any",
+        "key to dismiss (it won't reappear).",
         "",
         "  [ got it ]  ",
     ];
     for (i, l) in lines.iter().enumerate() {
-        let style = if i == 5 {
+        let style = if i == 6 {
             Style::default().fg(Color::Cyan).bold()
         } else {
             Style::default().fg(Color::White)
@@ -1759,6 +1776,13 @@ fn draw_first_run_popup(f: &mut Frame) {
             Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
         );
     }
+    Some(pop)
+}
+
+/// The clickable [ got it ] row inside the first-run popup.
+fn first_run_got_it_rect(pop: Rect) -> Rect {
+    let inner = pop.inner(Margin { horizontal: 1, vertical: 1 });
+    Rect::new(inner.x, inner.y + 6, 14, 1)
 }
 
 /// A horizontal bar with the value printed at its right end. The value is
@@ -3557,6 +3581,60 @@ mod tests {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         );
         assert!(!app.first_run && !app.help, "other keys only dismiss");
+    }
+
+    #[test]
+    fn first_run_popup_only_got_it_click_dismisses() {
+        let mut app = app_with_run("x");
+        app.first_run = true;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let pop = app.first_run_rect.expect("popup rect recorded");
+        // 120x40 -> pop centered at (33, 15) 54x9, button row inner.y + 6
+        // a mouse move (even over the popup) must not dismiss it
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: pop.x + 2,
+                row: pop.y + 6,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(app.first_run, "mouse move must not dismiss the notice");
+        // clicks elsewhere neither
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(app.first_run, "click outside must not dismiss the notice");
+        // clicking [ got it ] dismisses
+        let btn = first_run_got_it_rect(pop);
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: btn.x + 4,
+                row: btn.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(!app.first_run, "clicking [ got it ] dismisses the notice");
+    }
+
+    #[test]
+    fn demo_env_disables_first_run_notice() {
+        // SAFETY: single-threaded ui tests never read this var elsewhere
+        unsafe { std::env::set_var("SERVER_SPY_DEMO", "1") };
+        let suppressed = !first_run_notice_wanted();
+        unsafe { std::env::remove_var("SERVER_SPY_DEMO") };
+        assert!(suppressed, "SERVER_SPY_DEMO must suppress the notice");
     }
 
     #[test]
