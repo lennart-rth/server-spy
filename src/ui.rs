@@ -1234,7 +1234,7 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let line = vec![
-        Span::styled("Worker Filter: ", Style::default().fg(Color::Cyan)),
+        Span::styled("Experiment Filter: ", Style::default().fg(Color::Cyan)),
         Span::styled(
             format!("\"{}\"", app.name_input),
             Style::default().fg(Color::DarkGray),
@@ -1844,7 +1844,7 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
     let header = Line::from(vec![
         Span::styled(format!("{:<7}", "metric"), Style::default().fg(Color::Cyan).bold()),
         Span::styled(format!("{:>4}", "n"), Style::default().fg(Color::Cyan).bold()),
-        Span::styled(format!("{:>6}", "med"), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(format!("{:>6}", "median"), Style::default().fg(Color::Cyan).bold()),
         Span::styled(format!("{:>6}", "MAD%"), Style::default().fg(Color::Cyan).bold()),
         Span::styled(format!("{:>7}", "max"), Style::default().fg(Color::Cyan).bold()),
     ]);
@@ -2006,8 +2006,8 @@ fn draw_util(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let legend = Line::from(vec![
         Span::styled("■ ", Style::default().fg(Color::Green)),
-        Span::styled("target Workers  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("■ ", Style::default().fg(Color::Red)),
+        Span::styled("target experiments runs", Style::default().fg(Color::DarkGray)),
+        Span::styled("   ■ ", Style::default().fg(Color::Red)),
         Span::styled("other processes", Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(legend), rows[3]);
@@ -2092,7 +2092,7 @@ fn draw_help_header(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let line = vec![
-        Span::styled("Worker Filter: ", Style::default().fg(Color::Cyan)),
+        Span::styled("Experiment Filter: ", Style::default().fg(Color::Cyan)),
         Span::styled(
             format!("\"{}\"", app.name_input),
             Style::default().fg(Color::White),
@@ -3483,7 +3483,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let all = buffer_text(&mut terminal);
         for token in [
-            "Worker Filter",
+            "Experiment Filter",
             "Live congestion",
             "congestion",
             "Experiment Runs",
