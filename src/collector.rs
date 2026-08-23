@@ -236,7 +236,12 @@ struct RunUserAcc {
     rss_peak: u64,
 }
 
-/// A non-owned process that consumed CPU in the current poll interval.
+/// A non-owned process, with the CPU ticks it consumed in the current poll
+/// interval (0 for processes that are present but idle). `active_others`
+/// only keeps the running ones for run attribution; the live "Other
+/// processes/users" lists include every present process so idle ones don't
+/// blink in and out of the TUI.
+#[derive(Clone)]
 struct ActivePid {
     dt: u64,
     rss: u64,
@@ -483,6 +488,7 @@ impl Collector {
         }
         let euid = unsafe { libc::geteuid() };
         let mut active_others: HashMap<i32, ActivePid> = HashMap::new();
+        let mut live_others: HashMap<i32, ActivePid> = HashMap::new();
         for p in &procs {
             if tree.contains(&p.pid)
                 || p.pid == self_pid
@@ -491,19 +497,16 @@ impl Collector {
             {
                 continue;
             }
-            let dt = delta_ticks(&self.pid_last, p.pid, p.ticks);
-            if dt == 0 {
-                continue;
-            }
             if demo && !self.scan_cache.is_demo_agent(p.pid) {
                 continue;
             }
+            let dt = delta_ticks(&self.pid_last, p.pid, p.ticks);
             let (user, comm) = active_identity(demo, p, &self.pid_accum, &self.scan_cache);
             let cmdline = match self.pid_accum.get(&p.pid) {
                 Some(a) => a.cmdline.clone(),
                 None => fmt_cmdline(&p.cmdline),
             };
-            active_others.insert(
+            live_others.insert(
                 p.pid,
                 ActivePid {
                     dt,
@@ -514,6 +517,9 @@ impl Collector {
                     own_user: !demo && p.uid == euid,
                 },
             );
+            if dt > 0 {
+                active_others.insert(p.pid, live_others.get(&p.pid).unwrap().clone());
+            }
         }
         for entry in self.runs.values_mut() {
             entry.roots.retain(|r| by_pid.contains_key(r) && !chain.contains(r));
@@ -820,7 +826,7 @@ impl Collector {
         }
         self.g_sched_last = Some(g_sched);
         let sys_wait = wait_overhead_pct(g_wait, g_cpu);
-        let (live_ants, live_users) = build_live_lists(&active_others, &live_wait, hz);
+        let (live_ants, live_users) = build_live_lists(&live_others, &live_wait, hz);
 
         for p in &procs {
             let sched = sched_map.get(&p.pid).copied();
@@ -989,6 +995,9 @@ pub(crate) fn self_chain(pid: i32) -> HashSet<i32> {
 /// Builds the "live" process and user lists: activity since the last poll
 /// only, from the per-poll active set. `wait` carries the per-pid scheduler
 /// wait deltas of the same interval (keyed by pid).
+/// The live "Other processes / users" lists. Every present non-owned process
+/// is listed (idle ones with cpu_secs 0), sorted by last-interval CPU use, so
+/// nothing blinks in and out of the TUI as processes go idle.
 fn build_live_lists(
     active: &HashMap<i32, ActivePid>,
     wait: &HashMap<i32, u64>,
@@ -1007,7 +1016,6 @@ fn build_live_lists(
         });
     }
     ants.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
-    ants.truncate(20);
     let mut by_user: HashMap<String, (f64, f64, u64, usize)> = HashMap::new();
     for (pid, a) in active {
         if a.own_user {
@@ -1030,7 +1038,6 @@ fn build_live_lists(
         })
         .collect();
     users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
-    users.truncate(12);
     (ants, users)
 }
 
@@ -1569,18 +1576,24 @@ mod tests {
             (12i32, ActivePid { dt: hz / 2, rss: 20, user: "alice".into(), comm: "cc1".into(), cmdline: "cc1".into(), own_user: false }),
             (13i32, ActivePid { dt: hz / 4, rss: 5, user: "bob".into(), comm: "bash".into(), cmdline: "bash".into(), own_user: false }),
             (14i32, ActivePid { dt: hz / 3, rss: 1, user: "me".into(), comm: "vim".into(), cmdline: "vim".into(), own_user: true }),
+            // present but idle last interval: must stay in the live lists
+            (15i32, ActivePid { dt: 0, rss: 50, user: "idleuser".into(), comm: "sleep".into(), cmdline: "sleep 100".into(), own_user: false }),
         ]);
         let wait = HashMap::from([(11i32, 500_000_000u64), (12i32, 250_000_000u64)]);
         let (ants, users) = build_live_lists(&active, &wait, hz);
-        assert_eq!(ants.len(), 4, "own-user processes are still listed as processes");
+        assert_eq!(ants.len(), 5, "own-user processes are still listed as processes");
         assert_eq!(ants[0].pid, 11);
         assert_eq!(ants[0].cpu_secs, 1.0);
         assert_eq!(ants[0].wait_secs, 0.5);
-        assert_eq!(users.len(), 2, "own user is excluded from the user list");
+        assert_eq!(ants[4].pid, 15, "idle processes stay listed, sorted last");
+        assert_eq!(ants[4].cpu_secs, 0.0);
+        assert_eq!(users.len(), 3, "own user is excluded from the user list");
         assert_eq!(users[0].user, "alice");
         assert_eq!(users[0].cpu_secs, 1.5);
         assert_eq!(users[0].procs, 2);
         assert_eq!(users[1].user, "bob");
+        assert_eq!(users[2].user, "idleuser", "idle users stay listed, sorted last");
+        assert_eq!(users[2].cpu_secs, 0.0);
     }
 
     #[test]
