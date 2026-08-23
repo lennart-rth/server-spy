@@ -90,6 +90,30 @@ curl -fsSL https://raw.githubusercontent.com/lennart-rth/server-spy/master/insta
 | Nix / NixOS | `nix run github:lennart-rth/server-spy` or `nix profile install github:lennart-rth/server-spy` |
 
 
+## Uninstall
+
+The quick install (first row above) is just one static binary — no packages
+or system services:
+
+```sh
+server-spy stop                   # stop the background daemon
+rm ~/.local/bin/server-spy        # or /usr/local/bin/server-spy when installed as root
+rm -rf ~/.local/state/server-spy  # config, log and the first-run marker
+```
+
+`server-spy-*.csv` snapshot files (saved with `s` in the TUI, in the current
+directory) are yours to keep or delete.
+
+| Method | Uninstall command |
+|---|---|
+| Quick install (no sudo) | `rm ~/.local/bin/server-spy` and `rm -rf ~/.local/state/server-spy` |
+| Quick install (as root) | `rm /usr/local/bin/server-spy` and `rm -rf /root/.local/state/server-spy` |
+| crates.io | `cargo uninstall server-spy` |
+| apt repo | `sudo apt remove server-spy` |
+| Fedora / RHEL rpm | `sudo rpm -e server-spy` |
+| Nix profile | `nix profile remove server-spy` (find the exact name with `nix profile list`) |
+
+
 # Commands
 `server-spy` to start the TUI
 
