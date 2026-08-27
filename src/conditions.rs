@@ -15,6 +15,9 @@ pub struct Dist {
     pub p25: f64,
     pub median: f64,
     pub p75: f64,
+    /// The 90th percentile: the level reached by the worst 10% of runs, so
+    /// short congestion spikes are not buried in the median.
+    pub p90: f64,
     pub max: f64,
     pub mean: f64,
     pub sd: f64,
@@ -109,6 +112,7 @@ pub fn summarize(values: &[f64]) -> Option<Dist> {
     let median = percentile(&v, 0.5);
     let p25 = percentile(&v, 0.25);
     let p75 = percentile(&v, 0.75);
+    let p90 = percentile(&v, 0.90);
     let mean = v.iter().sum::<f64>() / n as f64;
     let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
     let sd = var.sqrt();
@@ -126,6 +130,7 @@ pub fn summarize(values: &[f64]) -> Option<Dist> {
         p25,
         median,
         p75,
+        p90,
         max: v[n - 1],
         mean,
         sd,
@@ -282,6 +287,7 @@ mod tests {
         assert_eq!(d.iqr, 2.0);
         assert_eq!(d.min, 1.0);
         assert_eq!(d.max, 100.0);
+        assert!((d.p90 - 61.6).abs() < 1e-9, "p90 = 4 + (100-4)*0.6");
         assert!((d.mean - 22.0).abs() < 1e-9);
         assert!((d.mad - 1.0).abs() < 1e-9);
         assert!((d.mad_rel - 33.333).abs() < 0.01);

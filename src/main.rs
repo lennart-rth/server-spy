@@ -4,6 +4,7 @@ mod daemon;
 mod metrics;
 mod procfs;
 mod save;
+mod scenario;
 mod ui;
 
 use std::sync::Arc;

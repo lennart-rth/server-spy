@@ -1,40 +1,25 @@
 #!/bin/sh
-# server-spy demo: a believable shared-server scenario.
-#   - realistic experiment runs (bench_ann.py), two at a time, endlessly
-#   - fluctuating antagonists disguised as common CS workloads; alice is the
-#     heavy user, with periodic CPU surges that wreck unlucky runs
-#   - SERVER_SPY_DEMO=1 makes the TUI show the antagonists under fake
-#     usernames ("other users") and hides everything owned by the real user
+# server-spy demo: a completely fake shared-server scenario. No real process
+# is spawned or monitored — scenario.json defines the workloads (with
+# spikes and interference) and the experiment runs; the daemon synthesizes
+# snapshots from it, so the demo is fully reproducible and tunable by hand.
 set -e
 cd "$(dirname "$0")"
-mkdir -p /tmp/server-spy-demo
-chmod 777 /tmp/server-spy-demo
-ANT_ARGS=${ANT_ARGS:---cpu 24 --mem 6000 --io 1500}
 SPY=${SPY:-../target/release/server-spy}
+SCENARIO=${SCENARIO:-scenario.json}
+# resolve to an absolute path: the detached daemon inherits our cwd, so a
+# relative path would be looked up from the wrong directory and the daemon
+# would silently exit (start then times out)
+case "$SCENARIO" in
+    /*) ;;
+    *) SCENARIO="$(pwd)/$SCENARIO" ;;
+esac
 
 export SERVER_SPY_DEMO=1
-# the experiment owner — so the filter preview shows our workers properly
+# the experiment owner — shown as the owner of the experiment processes
 export SERVER_SPY_DEMO_USER=${SERVER_SPY_DEMO_USER:-eve}
+export SERVER_SPY_SCENARIO="$SCENARIO"
 
-python3 antagonists.py $ANT_ARGS >/dev/null 2>&1 &
-ANTS=$!
-# endless stream of experiment runs, two at a time
-while :; do
-    ./runner.py >/dev/null 2>&1
-    sleep 2
-done &
-RUNNER=$!
-cleanup() {
-    set +e
-    "$SPY" stop >/dev/null 2>&1
-    kill $ANTS $RUNNER 2>/dev/null
-    sleep 0.3
-    pkill -f "$(pwd)/antagonists.py" 2>/dev/null
-    pkill -f "$(pwd)/bench_ann.py" 2>/dev/null
-    pkill -f "$(pwd)/runner.py" 2>/dev/null
-    rm -rf /tmp/server-spy-demo
-}
-trap cleanup EXIT INT TERM HUP
-sleep 1
-"$SPY" start --target bench_ann --interval 1
+"$SPY" stop >/dev/null 2>&1 || true
+"$SPY" start --target "" --interval 1
 "$SPY" tui

@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Flex;
@@ -17,9 +17,10 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use serde::Deserialize;
 
 use crate::collector::{Antag, MatchInfo, Rule, RunAnt, RunRow, Snapshot, UserShare};
-use crate::conditions::fmt_num;
+use crate::conditions::{fmt_num, Dist};
 use crate::daemon;
 use crate::metrics::{
     attribution, fmt_bytes, fmt_clock, fmt_pct, fmt_secs, stall_secs, system_congestion_index,
@@ -138,6 +139,7 @@ fn confirm_filter(app: &mut App) {
         if daemon::set_rules(&rules).is_err() {
             let _ = daemon::stop();
             let _ = daemon::start("", app.interval, app.history_len);
+            reapply_stealth(app);
             let _ = daemon::set_rules(&rules);
         }
         app.refresh();
@@ -208,6 +210,173 @@ enum Highlight {
     Run(u64),
 }
 
+/// One timed step of a demo recording script (see demo/script.json). Shell
+/// steps (`shell_*`, `wait_text`, `sleep`) are executed by demo/record-demo.sh
+/// via tmux; the TUI executes the UI steps itself by synthesizing the same
+/// key and mouse events a human would produce. Each side normalizes its own
+/// timeline: the first step it handles is t = 0.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "act", rename_all = "snake_case")]
+enum ScriptAct {
+    Sleep,
+    /// Executed by demo/record-demo.sh (tmux), not the TUI.
+    ShellType {
+        #[allow(dead_code)]
+        text: String,
+        #[allow(dead_code)]
+        rate: Option<f64>,
+    },
+    #[allow(dead_code)]
+    ShellEnter,
+    /// Executed by demo/record-demo.sh (tmux), not the TUI.
+    WaitText {
+        #[allow(dead_code)]
+        pattern: String,
+    },
+    /// Executed by demo/record-demo.sh (tmux), not the TUI: waits until a
+    /// pattern has disappeared from the pane.
+    WaitGone {
+        #[allow(dead_code)]
+        pattern: String,
+    },
+    Key { key: String },
+    Keys { text: String, rate: Option<f64> },
+    Click { x: u16, y: u16 },
+    ClickUser { name: String },
+    ClickProc { name: String },
+    /// Accepts `order` (number) or `name` (string), e.g. `"order": 2` or
+    /// `"name": "2"` — both click the run with that order.
+    ClickRun {
+        #[serde(alias = "name", deserialize_with = "de_u64")]
+        order: u64,
+    },
+    Sort { table: String, col: usize },
+    Tab { table: String, mode: String },
+}
+
+/// Deserializes a u64 from either a JSON number or a numeric string.
+fn de_u64<'de, D>(d: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| serde::de::Error::custom("order must be an integer")),
+        serde_json::Value::String(s) => s
+            .parse::<u64>()
+            .map_err(|_| serde::de::Error::custom("order must be an integer")),
+        _ => Err(serde::de::Error::custom("order must be a number or string")),
+    }
+}
+
+impl ScriptAct {
+    /// Whether this step is executed by the TUI (rather than the shell
+    /// driver in record-demo.sh).
+    fn is_ui(&self) -> bool {
+        !matches!(
+            self,
+            ScriptAct::Sleep
+                | ScriptAct::ShellType { .. }
+                | ScriptAct::ShellEnter
+                | ScriptAct::WaitText { .. }
+                | ScriptAct::WaitGone { .. }
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ScriptStep {
+    t: f64,
+    #[serde(flatten)]
+    act: ScriptAct,
+}
+
+/// Replays a recording script inside the TUI: due steps are turned into
+/// synthetic key/mouse events and fed to the normal handlers. Clicks on
+/// named rows (user/process/run) are retried until the target actually
+/// exists on screen, so the demo does not depend on exact timing.
+struct ScriptRunner {
+    /// (normalized time, action); multi-char typing is pre-expanded
+    steps: VecDeque<(f64, ScriptAct)>,
+    start: Instant,
+    /// Actions that could not be completed yet, with their deadline
+    pending: VecDeque<(ScriptAct, Instant)>,
+}
+
+impl ScriptRunner {
+    fn load(path: &Path) -> Option<ScriptRunner> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let steps: Vec<ScriptStep> = match serde_json::from_str(&text) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("server-spy: demo script {path:?} failed to load: {e}");
+                return None;
+            }
+        };
+        let t0 = steps
+            .iter()
+            .find(|s| s.act.is_ui())
+            .map(|s| s.t)
+            .unwrap_or(0.0);
+        let mut out = VecDeque::new();
+        for s in steps {
+            if !s.act.is_ui() {
+                continue;
+            }
+            match &s.act {
+                ScriptAct::Keys { text, rate } => {
+                    let rate = rate.unwrap_or(0.05).max(0.001);
+                    for (i, ch) in text.chars().enumerate() {
+                        out.push_back((
+                            (s.t - t0) + i as f64 * rate,
+                            ScriptAct::Key {
+                                key: ch.to_string(),
+                            },
+                        ));
+                    }
+                }
+                other => out.push_back((s.t - t0, other.clone())),
+            }
+        }
+        Some(ScriptRunner {
+            steps: out,
+            start: Instant::now(),
+            pending: VecDeque::new(),
+        })
+    }
+
+    /// Dispatches all steps whose time has arrived; clicks whose target is
+    /// not present yet are kept and retried on later ticks.
+    fn tick(&mut self, app: &mut App) -> bool {
+        let now = self.start.elapsed().as_secs_f64();
+        let mut fired = false;
+        while let Some((t, _)) = self.steps.front() {
+            if *t > now {
+                break;
+            }
+            let act = self.steps.pop_front().unwrap().1;
+            fired = true;
+            if !script_dispatch(app, act.clone()) {
+                // target not there yet: retry for a while
+                self.pending
+                    .push_back((act, Instant::now() + Duration::from_secs(20)));
+            }
+        }
+        let mut kept: VecDeque<(ScriptAct, Instant)> = VecDeque::new();
+        while let Some((act, deadline)) = self.pending.pop_front() {
+            if Instant::now() > deadline || script_dispatch(app, act.clone()) {
+                fired = true;
+            } else {
+                kept.push_back((act, deadline));
+            }
+        }
+        self.pending = kept;
+        fired
+    }
+}
+
 pub struct App {
     pub name_input: String,
     snapshot: Option<Snapshot>,
@@ -217,6 +386,8 @@ pub struct App {
     popup: Option<Popup>,
     browser: Option<Browser>,
     stealth: Option<Stealth>,
+    /// The active stealth name; re-applied to the daemon after restarts.
+    stealth_name: String,
     filter_btn_area: Rect,
     dirty: bool,
     interval: Duration,
@@ -234,6 +405,12 @@ pub struct App {
     sel_user: Option<usize>,
     sel_ant: Option<usize>,
     highlight: Option<Highlight>,
+    /// Row index (in the full sorted list) at which the highlighted entry is
+    /// pinned while it stays highlighted; the row keeps this index even as
+    /// the table re-sorts around it.
+    pin_run: Option<usize>,
+    pin_user: Option<usize>,
+    pin_ant: Option<usize>,
     mouse: Option<(u16, u16)>,
     hover: Option<(String, u16, u16)>,
     live: bool,
@@ -245,6 +422,9 @@ pub struct App {
     first_run_rect: Option<Rect>,
     help: bool,
     quit: bool,
+    /// Optional demo recording script (SERVER_SPY_SCRIPT); drives the TUI
+    /// with synthetic key/mouse events during recordings.
+    script: Option<ScriptRunner>,
 }
 
 impl App {
@@ -258,6 +438,7 @@ impl App {
             popup: None,
             browser: None,
             stealth: None,
+            stealth_name: String::new(),
             filter_btn_area: Rect::default(),
             dirty: true,
             interval,
@@ -275,6 +456,9 @@ impl App {
             sel_user: None,
             sel_ant: None,
             highlight: None,
+            pin_run: None,
+            pin_user: None,
+            pin_ant: None,
             mouse: None,
             hover: None,
             live: false,
@@ -286,6 +470,10 @@ impl App {
             first_run_rect: None,
             help: false,
             quit: false,
+            script: std::env::var("SERVER_SPY_SCRIPT")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .and_then(|p| ScriptRunner::load(Path::new(&p))),
         }
     }
 
@@ -472,11 +660,20 @@ fn confirm_stealth(app: &mut App) {
         } else {
             let _ = daemon::set_stealth(&name);
             daemon::rename_self(&name);
+            app.stealth_name = name.clone();
             app.flash = Some((
                 format!("stealth on — processes now show as '{name}'"),
                 Instant::now(),
             ));
         }
+    }
+}
+
+/// Re-applies the stealth name to a freshly started daemon (daemon restarts
+/// lose it otherwise).
+fn reapply_stealth(app: &mut App) {
+    if !app.stealth_name.is_empty() {
+        let _ = daemon::set_stealth(&app.stealth_name);
     }
 }
 
@@ -528,8 +725,24 @@ fn event_loop(
                 _ => {}
             }
         }
+        // scripted demo input (SERVER_SPY_SCRIPT): replay due steps as
+        // synthetic events, independent of real terminal input; clicks whose
+        // target row is not present yet are retried on later ticks
+        if script_tick(app) {
+            app.dirty = true;
+        }
     }
     Ok(())
+}
+
+/// Runs the scripted input for one loop iteration (see ScriptRunner::tick).
+fn script_tick(app: &mut App) -> bool {
+    let Some(mut runner) = app.script.take() else {
+        return false;
+    };
+    let fired = runner.tick(app);
+    app.script = Some(runner);
+    fired
 }
 
 fn handle_key(app: &mut App, k: KeyEvent) {
@@ -754,10 +967,16 @@ fn handle_key(app: &mut App, k: KeyEvent) {
                     .unwrap_or_else(|| app.name_input.clone());
                 let _ = daemon::stop();
                 let _ = daemon::start(&target, app.interval, app.history_len);
+                reapply_stealth(app);
                 app.refresh();
             }
         }
-        KeyCode::Esc => app.highlight = None,
+        KeyCode::Esc => {
+            app.highlight = None;
+            app.pin_run = None;
+            app.pin_user = None;
+            app.pin_ant = None;
+        }
         KeyCode::Enter => {
             if app.focus == 1 {
                 apply_highlight(app, 1);
@@ -816,45 +1035,19 @@ fn in_rect(row: u16, col: u16, area: Rect) -> bool {
         && row < area.y + area.height
 }
 
-fn col_at(x: u16, area: &Rect, fixed: &[u16], min_idx: usize) -> Option<usize> {
+/// Maps a click x to a column index using the exact layout math of the
+/// rendered table (flex Start, 1-cell spacing), so header clicks and hover
+/// positions land on the column they visually cover.
+fn col_at_widths(x: u16, area: &Rect, widths: &[Constraint]) -> Option<usize> {
     if area.width == 0 || x < area.x || x >= area.x + area.width {
         return None;
     }
-    let n = fixed.len() + 1;
-    let sum: u16 = fixed.iter().sum();
-    let gaps = n as u16;
-    let min_w = area.width.saturating_sub(sum + gaps);
-    let mut cur = area.x;
-    for col in 0..n {
-        let wcol = if col == min_idx {
-            min_w
-        } else if col < min_idx {
-            fixed[col]
-        } else {
-            fixed[col - 1]
-        };
-        if x < cur + wcol {
-            return Some(col);
-        }
-        cur += wcol + 1;
-    }
-    Some(n - 1)
-}
-
-/// Maps a click x to a column index for a fully fixed, left-aligned table
-/// (no flexible column); clicks in the trailing empty space hit no column.
-fn col_at_left(x: u16, area: &Rect, widths: &[u16]) -> Option<usize> {
-    if area.width == 0 || x < area.x || x >= area.x + area.width {
-        return None;
-    }
-    let mut cur = area.x;
-    for (i, w) in widths.iter().enumerate() {
-        if x < cur + *w {
-            return Some(i);
-        }
-        cur += *w + 1;
-    }
-    None
+    let cols = Layout::horizontal(widths.to_vec())
+        .flex(Flex::Start)
+        .spacing(1)
+        .split(Rect::new(0, 0, area.width, 1));
+    cols.iter()
+        .position(|r| x >= area.x + r.x && x < area.x + r.x + r.width)
 }
 
 fn toggle_sort(state: &mut (usize, bool), col: usize) {
@@ -866,8 +1059,168 @@ fn toggle_sort(state: &mut (usize, bool), col: usize) {
     }
 }
 
+/// The x center of a table column, computed with the same layout math as the
+/// rendered table (flex Start, 1-cell spacing).
+fn col_center(area: &Rect, widths: &[Constraint], col: usize) -> u16 {
+    let cols = Layout::horizontal(widths.to_vec())
+        .flex(Flex::Start)
+        .spacing(1)
+        .split(Rect::new(0, 0, area.width, 1));
+    cols.get(col)
+        .map(|r| area.x + r.x + r.width / 2)
+        .unwrap_or(area.x + 1)
+}
+
+fn script_click(app: &mut App, x: u16, y: u16) {
+    handle_mouse(
+        app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    // The demo has no real mouse: drop the synthetic hover position so the
+    // params/cmdline tooltip does not stay open after a scripted click.
+    app.mouse = None;
+}
+
+fn script_key(app: &mut App, code: KeyCode) {
+    handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+/// Clicks the row of a named user (panel 1) or process (panel 2) in its
+/// table, replicating the drawn sort order (with pinning). Returns whether
+/// the row existed (so the caller can retry until it appears).
+fn click_named_row(app: &mut App, panel: usize, name: &str) -> bool {
+    let Some(s) = &app.snapshot else {
+        return false;
+    };
+    let (idx, area, scroll) = if panel == 1 {
+        let list = if app.live { &s.live_users } else { &s.users };
+        let mut sorted: Vec<&UserShare> = list.iter().collect();
+        let overlap = user_overlap(s);
+        sort_users(&mut sorted, app.users_sort, &overlap);
+        let hl = app.highlight.clone();
+        apply_pin(&mut sorted, &mut app.pin_user, |u| is_pinned_user(u, &hl));
+        let Some(idx) = sorted.iter().position(|u| u.user == name) else {
+            return false;
+        };
+        (idx, app.users_area, app.uscroll)
+    } else {
+        let list = if app.live { &s.live_ants } else { &s.antagonists };
+        let mut sorted: Vec<&Antag> = list.iter().collect();
+        let (by_pid, by_comm) = proc_overlap(s);
+        sort_ants(&mut sorted, app.ants_sort, &by_pid, &by_comm);
+        let hl = app.highlight.clone();
+        apply_pin(&mut sorted, &mut app.pin_ant, |a| is_pinned_ant(a, &hl));
+        let Some(idx) = sorted.iter().position(|a| a.comm == name) else {
+            return false;
+        };
+        (idx, app.ants_area, app.ascroll)
+    };
+    let visible = area.height.saturating_sub(1) as usize;
+    if idx < scroll {
+        app.uscroll = idx;
+    } else if idx >= scroll + visible {
+        app.uscroll = idx - visible + 1;
+    }
+    let scroll = if panel == 1 { app.uscroll } else { app.ascroll };
+    script_click(app, area.x + 2, area.y + 1 + (idx - scroll) as u16);
+    true
+}
+
+/// Clicks the row of an experiment run (matched by its order). Returns
+/// whether the run existed (so the caller can retry until it appears).
+fn click_run_row(app: &mut App, order: u64) -> bool {
+    let Some(s) = &app.snapshot else {
+        return false;
+    };
+    let mut sorted: Vec<&RunRow> = s.runs.iter().collect();
+    sort_runs(&mut sorted, app.runs_sort);
+    let hl = app.highlight.clone();
+    apply_pin(&mut sorted, &mut app.pin_run, |r| is_pinned_run(r, &hl));
+    let Some(idx) = sorted.iter().position(|r| r.order == order) else {
+        return false;
+    };
+    let visible = app.runs_area.height.saturating_sub(1) as usize;
+    if idx < app.scroll {
+        app.scroll = idx;
+    } else if idx >= app.scroll + visible {
+        app.scroll = idx - visible + 1;
+    }
+    script_click(app, app.runs_area.x + 2, app.runs_area.y + 1 + (idx - app.scroll) as u16);
+    true
+}
+
+/// Executes one scripted UI step by synthesizing the corresponding key or
+/// mouse event and feeding it to the normal handlers. Returns false for
+/// clicks whose target row does not exist yet, so the caller can retry.
+fn script_dispatch(app: &mut App, act: ScriptAct) -> bool {
+    match act {
+        ScriptAct::Key { key } => {
+            let code = match key.as_str() {
+                "enter" => KeyCode::Enter,
+                "esc" => KeyCode::Esc,
+                "tab" => KeyCode::Tab,
+                "backspace" => KeyCode::Backspace,
+                "delete" => KeyCode::Delete,
+                "up" => KeyCode::Up,
+                "down" => KeyCode::Down,
+                "left" => KeyCode::Left,
+                "right" => KeyCode::Right,
+                "home" => KeyCode::Home,
+                "end" => KeyCode::End,
+                c if c.len() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+                _ => return true,
+            };
+            script_key(app, code);
+        }
+        ScriptAct::Click { x, y } => script_click(app, x, y),
+        ScriptAct::ClickUser { name } => return click_named_row(app, 1, &name),
+        ScriptAct::ClickProc { name } => return click_named_row(app, 2, &name),
+        ScriptAct::ClickRun { order } => return click_run_row(app, order),
+        ScriptAct::Sort { table, col } => {
+            let run_sel = matches!(&app.highlight, Some(Highlight::Run(_)));
+            let (area, x) = match table.as_str() {
+                "runs" => (
+                    app.runs_area,
+                    col_center(&app.runs_area, &runs_widths(app.runs_area.width), col),
+                ),
+                "users" => (
+                    app.users_area,
+                    col_center(&app.users_area, users_widths(run_sel), col),
+                ),
+                "ants" => (
+                    app.ants_area,
+                    col_center(&app.ants_area, ants_widths(run_sel), col),
+                ),
+                _ => return true,
+            };
+            if area.width > 0 {
+                script_click(app, x, area.y);
+            }
+        }
+        ScriptAct::Tab { table, mode } => {
+            let (overall, live) = match table.as_str() {
+                "users" => app.user_tabs,
+                "ants" => app.ants_tabs,
+                _ => return true,
+            };
+            let r = if mode == "live" { live } else { overall };
+            if r.width > 0 {
+                script_click(app, r.x + 1, r.y);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 /// Sets `app.highlight` from the currently selected row of the users (1) or
-/// processes (2) panel, in the panel's current sort order.
+/// processes (2) panel, in the panel's current sort order. The selected row
+/// is pinned to its index so it does not shift when the table updates.
 fn apply_highlight(app: &mut App, panel: usize) {
     let Some(s) = &app.snapshot else {
         return;
@@ -877,17 +1230,24 @@ fn apply_highlight(app: &mut App, panel: usize) {
         let mut sorted: Vec<&UserShare> = list.iter().collect();
         let overlap = user_overlap(s);
         sort_users(&mut sorted, app.users_sort, &overlap);
+        let hl = app.highlight.clone();
+        apply_pin(&mut sorted, &mut app.pin_user, |u| is_pinned_user(u, &hl));
         let Some(i) = app.sel_user else {
             return;
         };
         if let Some(u) = sorted.get(i) {
             app.highlight = Some(Highlight::User(u.user.clone()));
+            app.pin_user = Some(i);
+            app.pin_ant = None;
+            app.pin_run = None;
         }
     } else if panel == 2 {
         let list = if app.live { &s.live_ants } else { &s.antagonists };
         let mut sorted: Vec<&Antag> = list.iter().collect();
         let (by_pid, by_comm) = proc_overlap(s);
         sort_ants(&mut sorted, app.ants_sort, &by_pid, &by_comm);
+        let hl = app.highlight.clone();
+        apply_pin(&mut sorted, &mut app.pin_ant, |a| is_pinned_ant(a, &hl));
         let Some(i) = app.sel_ant else {
             return;
         };
@@ -896,8 +1256,46 @@ fn apply_highlight(app: &mut App, panel: usize) {
                 pid: a.pid,
                 comm: a.comm.clone(),
             });
+            app.pin_ant = Some(i);
+            app.pin_user = None;
+            app.pin_run = None;
         }
     }
+}
+
+/// Whether a run row is the one currently highlighted (and so pinned).
+fn is_pinned_run(r: &&RunRow, hl: &Option<Highlight>) -> bool {
+    matches!(hl, Some(Highlight::Run(o)) if r.order == *o)
+}
+
+/// Whether a user row is the one currently highlighted (and so pinned).
+fn is_pinned_user(u: &&UserShare, hl: &Option<Highlight>) -> bool {
+    matches!(hl, Some(Highlight::User(x)) if u.user == *x)
+}
+
+/// Whether a process row is the one currently highlighted (and so pinned).
+fn is_pinned_ant(a: &&Antag, hl: &Option<Highlight>) -> bool {
+    matches!(hl, Some(Highlight::Ant { pid, comm }) if a.pid == *pid || (*pid < 0 && a.comm == *comm))
+}
+
+/// Keeps the highlighted element at its stored index while the rest of the
+/// list re-sorts around it: the element is removed from its sorted position
+/// and re-inserted at `pin` (clamped to the list length). Once the pin is
+/// cleared the element sorts back in normally. A no-op when the element is
+/// absent from the list or already at its pin index.
+fn apply_pin<T>(sorted: &mut Vec<&T>, pin: &mut Option<usize>, is_pinned: impl Fn(&&T) -> bool) {
+    let Some(p) = *pin else {
+        return;
+    };
+    let Some(pos) = sorted.iter().position(is_pinned) else {
+        return;
+    };
+    if pos == p {
+        return;
+    }
+    let el = sorted.remove(pos);
+    let target = p.min(sorted.len());
+    sorted.insert(target, el);
 }
 
 /// Whether a run row was affected by the highlighted process/user: the
@@ -957,6 +1355,96 @@ fn proc_overlap(s: &Snapshot) -> ProcOverlap {
         }
     }
     (by_pid, by_comm)
+}
+
+/// The CPU/mem weighting of a run's congestion attribution: how much of the
+/// run's congestion is CPU-driven vs memory-driven. IO has no per-process
+/// data, so it folds into CPU. Falls back to a neutral 50/50 split when the
+/// run has no measurable congestion.
+fn resource_weights(r: &RunRow) -> (f64, f64) {
+    match run_attr(r) {
+        Some((c, m, i)) => ((c + i) / 100.0, m / 100.0),
+        None => (0.5, 0.5),
+    }
+}
+
+/// Per-user shares (0..1) of a run's interference, weighted by the run's
+/// congestion mix: each user's CPU share counts with the CPU-driven part of
+/// the congestion, their RSS share with the memory-driven part (IO folds
+/// into CPU). Normalized so the shares sum to 1. None when there is nothing
+/// to attribute.
+fn run_user_shares(r: &RunRow) -> Option<HashMap<&str, f64>> {
+    let cpu_total: f64 = r.run_users.iter().map(|u| u.cpu_secs).sum();
+    let rss_total: f64 = r.run_users.iter().map(|u| u.rss as f64).sum();
+    if cpu_total <= 0.0 && rss_total <= 0.0 {
+        return None;
+    }
+    let (w_cpu, w_mem) = resource_weights(r);
+    let mut raw: Vec<(&str, f64)> = r
+        .run_users
+        .iter()
+        .map(|u| {
+            let cs = if cpu_total > 0.0 { u.cpu_secs / cpu_total } else { 0.0 };
+            let ms = if rss_total > 0.0 { u.rss as f64 / rss_total } else { 0.0 };
+            (u.user.as_str(), w_cpu * cs + w_mem * ms)
+        })
+        .collect();
+    let total: f64 = raw.iter().map(|(_, s)| *s).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    Some(raw.drain(..).map(|(u, s)| (u, s / total)).collect())
+}
+
+/// Per-process contribution shares keyed by pid (live sessions) and by comm
+/// (loaded snapshots carry pid -1).
+type ProcShares<'a> = (HashMap<i32, f64>, HashMap<&'a str, f64>);
+
+/// Per-process shares (0..1) of a run's interference, weighted by the run's
+/// congestion mix (CPU share with the CPU-driven part, RSS share with the
+/// memory-driven part; IO folds into CPU). Normalized to sum to 1. None when
+/// there is nothing to attribute.
+fn run_ant_shares(r: &RunRow) -> Option<ProcShares<'_>> {
+    let cpu_total: f64 = r.ants.iter().map(|a| a.cpu_secs).sum();
+    let rss_total: f64 = r.ants.iter().map(|a| a.rss as f64).sum();
+    if cpu_total <= 0.0 && rss_total <= 0.0 {
+        return None;
+    }
+    let (w_cpu, w_mem) = resource_weights(r);
+    let rows: Vec<(i32, &str, f64)> = r
+        .ants
+        .iter()
+        .map(|a| {
+            let cs = if cpu_total > 0.0 { a.cpu_secs / cpu_total } else { 0.0 };
+            let ms = if rss_total > 0.0 { a.rss as f64 / rss_total } else { 0.0 };
+            (a.pid, a.comm.as_str(), w_cpu * cs + w_mem * ms)
+        })
+        .collect();
+    let total: f64 = rows.iter().map(|(_, _, s)| *s).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut by_pid = HashMap::new();
+    let mut by_comm = HashMap::new();
+    for (pid, comm, s) in rows {
+        let share = s / total;
+        if pid >= 0 {
+            by_pid.insert(pid, share);
+        }
+        by_comm.insert(comm, share);
+    }
+    Some((by_pid, by_comm))
+}
+
+/// Background color for a highlighted row, scaled by the row's contribution
+/// to the selected run: dim slate for small shares, a bright accent for big
+/// ones (sqrt-scaled so differences are visible at the low end).
+fn contribution_color(share: f64) -> Color {
+    let t = share.clamp(0.0, 1.0).sqrt();
+    let lo = (70u8, 80u8, 110u8);
+    let hi = (135u8, 175u8, 255u8);
+    let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t) as u8;
+    Color::Rgb(mix(lo.0, hi.0), mix(lo.1, hi.1), mix(lo.2, hi.2))
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
@@ -1111,16 +1599,25 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 return;
             }
             if m.row == app.runs_area.y
-                && let Some(col) = col_at(m.column, &app.runs_area, &RUNS_FIXED, 0)
+                && let Some(col) =
+                    col_at_widths(m.column, &app.runs_area, &runs_widths(app.runs_area.width))
             {
                 toggle_sort(&mut app.runs_sort, col);
             } else if m.row == app.users_area.y
-                && let Some(col) = col_at_left(m.column, &app.users_area, &USERS_WIDTHS)
+                && let Some(col) = col_at_widths(
+                    m.column,
+                    &app.users_area,
+                    users_widths(matches!(&app.highlight, Some(Highlight::Run(_)))),
+                )
                 && col > 0
             {
                 toggle_sort(&mut app.users_sort, col);
             } else if m.row == app.ants_area.y
-                && let Some(col) = col_at(m.column, &app.ants_area, &ANTS_FIXED, 6)
+                && let Some(col) = col_at_widths(
+                    m.column,
+                    &app.ants_area,
+                    ants_widths(matches!(&app.highlight, Some(Highlight::Run(_)))),
+                )
                 && col > 0
             {
                 toggle_sort(&mut app.ants_sort, col);
@@ -1131,14 +1628,20 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             {
                 let mut sorted: Vec<&RunRow> = s.runs.iter().collect();
                 sort_runs(&mut sorted, app.runs_sort);
+                let hl = app.highlight.clone();
+                apply_pin(&mut sorted, &mut app.pin_run, |r| is_pinned_run(r, &hl));
                 let idx = app.scroll + (m.row - app.runs_area.y) as usize - 1;
                 if let Some(r) = sorted.get(idx) {
                     let order = r.order;
-                    app.highlight = if app.highlight == Some(Highlight::Run(order)) {
-                        None
+                    if app.highlight == Some(Highlight::Run(order)) {
+                        app.highlight = None;
+                        app.pin_run = None;
                     } else {
-                        Some(Highlight::Run(order))
-                    };
+                        app.highlight = Some(Highlight::Run(order));
+                        app.pin_run = Some(idx);
+                        app.pin_user = None;
+                        app.pin_ant = None;
+                    }
                     app.focus = 0;
                     app.sel_user = None;
                     app.sel_ant = None;
@@ -1743,46 +2246,56 @@ fn mark_first_run_done() {
 }
 
 /// First-run welcome overlay pointing new users at the help mode. Returns the
-/// popup rect so clicks can target the [ got it ] button.
+/// popup rect so clicks can target the dismiss button.
 fn draw_first_run_popup(f: &mut Frame) -> Option<Rect> {
     let area = f.area();
     let w = area.width.saturating_sub(4).min(54);
-    let h = 9u16;
+    let h = 8u16;
     if w < 40 || area.height < h + 4 {
         return None;
     }
     let pop = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
     f.render_widget(Clear, pop);
-    let block = Block::bordered().title(" welcome to server-spy ");
-    let inner = block.inner(pop);
-    f.render_widget(block, pop);
-    let lines = [
-        "Get familiar with the scores and numbers:",
-        "press h for an explanation of every metric,",
-        "column and click action. A mouse move won't",
-        "close this — click [ got it ] or press any",
-        "key to dismiss (it won't reappear).",
-        "",
-        "  [ got it ]  ",
+    f.render_widget(Block::bordered(), pop);
+    let inner = pop.inner(Margin { horizontal: 1, vertical: 1 });
+    let title = Paragraph::new(Line::from(Span::styled(
+        "Welcome to server-spy",
+        Style::default().fg(Color::Cyan).bold(),
+    )));
+    f.render_widget(title, Rect::new(inner.x, inner.y, inner.width, 1));
+    let bullets = [
+        ("-f", "filter for your experiment processes"),
+        ("h", "detailed visual help on all columns"),
     ];
-    for (i, l) in lines.iter().enumerate() {
-        let style = if i == 6 {
-            Style::default().fg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::White)
-        };
+    for (i, (key, text)) in bullets.iter().enumerate() {
+        let y = inner.y + 2 + i as u16;
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(*l, style))),
-            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            Paragraph::new(Line::from(vec![
+                Span::styled("• ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(*key, Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {text}"), Style::default().fg(Color::White)),
+            ])),
+            Rect::new(inner.x, y, inner.width, 1),
         );
     }
+    let btn = "  [Close and never show again]  ";
+    let bx = inner.x + ((inner.width as usize).saturating_sub(btn.len()) / 2) as u16;
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            btn,
+            Style::default().fg(Color::Cyan).bold(),
+        ))),
+        Rect::new(bx, inner.y + 5, btn.len() as u16, 1),
+    );
     Some(pop)
 }
 
-/// The clickable [ got it ] row inside the first-run popup.
+/// The clickable dismiss button inside the first-run popup.
 fn first_run_got_it_rect(pop: Rect) -> Rect {
     let inner = pop.inner(Margin { horizontal: 1, vertical: 1 });
-    Rect::new(inner.x, inner.y + 6, 14, 1)
+    let btn = "  [Close and never show again]  ";
+    let bx = inner.x + ((inner.width as usize).saturating_sub(btn.len()) / 2) as u16;
+    Rect::new(bx, inner.y + 5, btn.len() as u16, 1)
 }
 
 /// A horizontal bar with the value printed at its right end. The value is
@@ -1808,9 +2321,10 @@ fn bar_value(cur: f64, color: Color, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Conditions-consistency statistics: a compact table of the most telling
-/// distribution numbers per metric, with a one-line LaTeX copy control at
-/// the bottom. Kept as small as possible so Live congestion gets the space.
+/// Conditions-consistency statistics: one row per metric, one column per
+/// distribution number (n, median, MAD%, mean, sd, max), with a one-line
+/// LaTeX copy control at the bottom. Kept as small as possible so Live
+/// congestion gets the space.
 fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height < 7 {
         return;
@@ -1830,10 +2344,8 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    // header, up to three metric rows, a spacer, then the latex copy row; the
-    // metric column grows so the table spans the full pane width
+    // header, two metric rows, a spacer, then the latex copy row
     let rows = Layout::vertical([
-        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -1842,41 +2354,63 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .split(inner);
     let header = Line::from(vec![
-        Span::styled(format!("{:<7}", "metric"), Style::default().fg(Color::Cyan).bold()),
-        Span::styled(format!("{:>4}", "n"), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            format!("{:<10}", "metric"),
+            Style::default().fg(Color::Cyan).bold(),
+        ),
+        Span::styled(format!("{:>3}", "n"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
         Span::styled(format!("{:>6}", "median"), Style::default().fg(Color::Cyan).bold()),
-        Span::styled(format!("{:>6}", "MAD%"), Style::default().fg(Color::Cyan).bold()),
-        Span::styled(format!("{:>7}", "max"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>5}", "P90"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>5}", "MAD%"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>5}", "mean"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>4}", "sd"), Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>5}", "max"), Style::default().fg(Color::Cyan).bold()),
     ]);
     f.render_widget(Paragraph::new(header), rows[0]);
-    for (i, (name, d)) in [
-        (1usize, ("ci", &c.ci)),
-        (2, ("cl", &c.cl)),
-        (3, ("wait%", &c.wait)),
-    ] {
-        if let Some(d) = d {
-            let line = Line::from(vec![
-                Span::styled(format!("{name:<7}"), Style::default().fg(Color::White)),
-                Span::styled(format!("{:>4}", d.n), Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{:>6}", fmt_num(d.median)),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("{:>6}", fmt_num(d.mad_rel)),
-                    Style::default().fg(sev(d.mad_rel)),
-                ),
-                Span::styled(
-                    format!("{:>7}", fmt_num(d.max)),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-            f.render_widget(Paragraph::new(line), rows[i]);
+    let metrics: [(&str, &Option<Dist>); 2] = [
+        ("congestion", &c.ci),
+        ("wait%", &c.wait),
+    ];
+    let cell = |text: String, color: Color| Span::styled(text, Style::default().fg(color));
+    for (i, (name, d)) in metrics.iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            format!("{name:<10}"),
+            Style::default().fg(Color::White),
+        )];
+        match d {
+            Some(d) => {
+                spans.push(cell(format!("{:>3}", d.n), Color::DarkGray));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>6}", fmt_num(d.median)), Color::White));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>5}", fmt_num(d.p90)), Color::Yellow));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>5}", fmt_num(d.mad_rel)), sev(d.mad_rel)));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>5}", fmt_num(d.mean)), Color::White));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>4}", fmt_num(d.sd)), Color::DarkGray));
+                spans.push(Span::raw("  "));
+                spans.push(cell(format!("{:>5}", fmt_num(d.max)), Color::DarkGray));
+            }
+            None => {
+                for _ in 0..7 {
+                    spans.push(cell(format!("{:>5}", "–"), Color::DarkGray));
+                    spans.push(Span::raw("  "));
+                }
+            }
         }
+        f.render_widget(Paragraph::new(Line::from(spans)), rows[i + 1]);
     }
     // one left-aligned sentence at the bottom; the bracketed words are the
     // clickable copy buttons
-    let btn_row = rows[5];
+    let btn_row = rows[4];
     let line = Line::from(vec![
         Span::styled(
             "copy latex report ",
@@ -1891,8 +2425,20 @@ fn draw_stats(f: &mut Frame, app: &mut App, area: Rect) {
     app.stat_table_area = Rect::new(inner.x + 32, btn_row.y, 7, 1);
 }
 
+/// How a clipboard copy was delivered.
+enum CopyStatus {
+    /// A system clipboard tool (wl-copy / xclip / xsel) succeeded.
+    System,
+    /// The text was sent to the terminal's clipboard via OSC 52.
+    Terminal,
+    /// No clipboard available: the text was written to this file instead.
+    File(PathBuf),
+    /// Nothing could be done.
+    None,
+}
+
 /// Copies the LaTeX sentence (table=false) or table (table=true) for the
-/// current conditions summary to the system clipboard.
+/// current conditions summary to the clipboard.
 fn copy_conditions(app: &mut App, table: bool) {
     let Some(s) = &app.snapshot else {
         return;
@@ -1906,28 +2452,24 @@ fn copy_conditions(app: &mut App, table: bool) {
     } else {
         crate::conditions::latex_sentence(&s.conditions)
     };
-    if copy_to_clipboard(&text) {
-        app.flash = Some((
-            if table {
-                "copied latex table to clipboard"
-            } else {
-                "copied latex sentence to clipboard"
-            }
-            .into(),
-            Instant::now(),
-        ));
-    } else {
-        app.flash = Some((
-            "clipboard unavailable (need wl-copy, xclip or xsel)".into(),
-            Instant::now(),
-        ));
-    }
+    let what = if table { "latex table" } else { "latex sentence" };
+    let msg = match copy_to_clipboard(&text) {
+        CopyStatus::System => format!("copied {what} to clipboard"),
+        CopyStatus::Terminal => format!("copied {what} via terminal clipboard (OSC 52)"),
+        CopyStatus::File(p) => format!("no clipboard — saved to {}", p.display()),
+        CopyStatus::None => "clipboard unavailable".to_string(),
+    };
+    app.flash = Some((msg, Instant::now()));
 }
 
-/// Writes text to the system clipboard via whatever clipboard tool is
-/// installed (Wayland, X11 or generic). Each attempt is bounded by a 2s
-/// watchdog so a missing display server can never freeze the UI.
-fn copy_to_clipboard(text: &str) -> bool {
+/// Copies text to the clipboard with a fallback chain that works on any
+/// machine:
+///   1. system clipboard tools (wl-copy / xclip / xsel, verified),
+///   2. the terminal's own clipboard via the OSC 52 escape sequence (works
+///      over ssh and on headless servers whenever the local terminal
+///      supports it — kitty, alacritty, wezterm, gnome-terminal, tmux, ...),
+///   3. a file, so the text is never lost even on a fully headless box.
+fn copy_to_clipboard(text: &str) -> CopyStatus {
     use std::io::Write;
     use std::sync::mpsc;
     for (cmd, args) in [
@@ -1957,11 +2499,72 @@ fn copy_to_clipboard(text: &str) -> bool {
             let _ = child.wait();
             let _ = tx.send(());
         });
+        // each attempt is bounded so a missing display server can never
+        // freeze the UI
         if rx.recv_timeout(Duration::from_secs(2)).is_ok() {
-            return true;
+            return CopyStatus::System;
         }
     }
-    false
+    if osc52_copy(text) {
+        return CopyStatus::Terminal;
+    }
+    match file_fallback_copy(text) {
+        Some(p) => CopyStatus::File(p),
+        None => CopyStatus::None,
+    }
+}
+
+/// Standard base64 (RFC 4648) without external dependencies.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Sends the text to the terminal's clipboard via the OSC 52 escape
+/// sequence (`ESC ] 52 ; c ; <base64> ESC \`). The sequence travels to the
+/// local terminal, so this works over ssh and on headless servers. It
+/// cannot be verified from inside; terminals that do not support it simply
+/// ignore it.
+fn osc52_copy(text: &str) -> bool {
+    use std::io::Write;
+    let seq = format!("\x1b]52;c;{}\x1b\\", base64(text.as_bytes()));
+    let mut out = io::stdout();
+    out.write_all(seq.as_bytes()).is_ok() && out.flush().is_ok()
+}
+
+/// Last-resort copy: writes the text to a file and returns its path.
+fn file_fallback_copy(text: &str) -> Option<PathBuf> {
+    let path = if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+    {
+        rt.join("server-spy-copy.txt")
+    } else {
+        let uid = unsafe { libc::geteuid() };
+        std::env::temp_dir().join(format!("server-spy-copy-{uid}.txt"))
+    };
+    std::fs::write(&path, text).ok().map(|_| path)
 }
 
 fn draw_util(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2129,8 +2732,9 @@ fn draw_help_stats(f: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let lines = [
-        help_line_full("↓", "med", "typical value across completed runs"),
-        help_line_full("↓", "MAD±", "typical run-to-run deviation"),
+        help_line_full("↓", "median", "typical value across completed runs"),
+        help_line_full("↓", "MAD%", "typical run-to-run deviation"),
+        help_line_full("↓", "mean / sd", "average and standard deviation"),
         action_line(
             "copy latex",
             "paper sentence / table via the clipboard",
@@ -2356,13 +2960,10 @@ fn draw_help_lists(f: &mut Frame, area: Rect) {
         ("wait%", "wait vs CPU work — high = congested machine"),
         ("runs", "runs they were active in"),
         ("share", "share of the other-load"),
+        ("contribution", "share of the selected run's interference"),
     ] {
         ulines.push(help_line_full("↓", head, text));
     }
-    ulines.push(action_line(
-        "[overall] / [live]",
-        "overall vs live (v)",
-    ));
     ulines.push(action_line(
         "click to associate a user",
         "to the runs it affected (above)",
@@ -2412,6 +3013,7 @@ fn draw_help_lists(f: &mut Frame, area: Rect) {
         ("wait%", "their wait vs CPU work — high = congested machine"),
         ("runs", "in how many of your runs it was active"),
         ("cmdline", "full command — hover for tooltip"),
+        ("contribution", "share of the selected run's interference"),
     ] {
         alines.push(help_line_full("↓", head, text));
     }
@@ -2539,6 +3141,8 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut sorted: Vec<&RunRow> = s.runs.iter().collect();
     sort_runs(&mut sorted, app.runs_sort);
+    let hl = app.highlight.clone();
+    apply_pin(&mut sorted, &mut app.pin_run, |r| is_pinned_run(r, &hl));
     let mut headers: Vec<String> = [
         "params", "congestion", "cpu%", "mem%", "io%", "wait%", "util%", "wall", "usr", "state",
     ]
@@ -2800,6 +3404,25 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .map(|r| r.ants.iter().collect()),
         _ => None,
     };
+    // Per-user/process contribution shares of the selected run (None when no
+    // run is selected or there is nothing to attribute).
+    let run_sel = matches!(&app.highlight, Some(Highlight::Run(_)));
+    let user_shares: Option<HashMap<&str, f64>> = match &app.highlight {
+        Some(Highlight::Run(o)) => s
+            .runs
+            .iter()
+            .find(|r| r.order == *o)
+            .and_then(run_user_shares),
+        _ => None,
+    };
+    let ant_shares: Option<ProcShares<'_>> = match &app.highlight {
+        Some(Highlight::Run(o)) => s
+            .runs
+            .iter()
+            .find(|r| r.order == *o)
+            .and_then(run_ant_shares),
+        _ => None,
+    };
     if users.is_empty() {
         let msg = if app.live {
             "no one is actively running right now"
@@ -2811,6 +3434,8 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         let mut sorted: Vec<&UserShare> = users.iter().collect();
         let overlap = user_overlap(s);
         sort_users(&mut sorted, app.users_sort, &overlap);
+        let hl = app.highlight.clone();
+        apply_pin(&mut sorted, &mut app.pin_user, |u| is_pinned_user(u, &hl));
         let visible = uinner.height.saturating_sub(1).max(1) as usize;
         let total = sorted.len();
         if total > visible {
@@ -2839,11 +3464,16 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|h| h.to_string())
         .collect();
-        headers[app.users_sort.0] = format!(
-            "{}{}",
-            headers[app.users_sort.0],
-            if app.users_sort.1 { " ▲" } else { " ▼" }
-        );
+        if run_sel {
+            headers[0] = "contribution".to_string();
+        }
+        if app.users_sort.0 < headers.len() {
+            headers[app.users_sort.0] = format!(
+                "{}{}",
+                headers[app.users_sort.0],
+                if app.users_sort.1 { " ▲" } else { " ▼" }
+            );
+        }
         let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
         let rows: Vec<Row> = sorted
             .iter()
@@ -2858,6 +3488,14 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                     .as_ref()
                     .map(|set| set.contains(u.user.as_str()))
                     .unwrap_or(false);
+                let contrib = user_shares
+                    .as_ref()
+                    .and_then(|m| m.get(u.user.as_str()).copied());
+                let bg = if hl_on {
+                    contrib.map(contribution_color).unwrap_or(HIGHLIGHT_BG)
+                } else {
+                    HIGHLIGHT_BG
+                };
                 let fg = |s: Style| {
                     if hl_on {
                         s.fg(Color::White)
@@ -2868,7 +3506,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                 };
                 let row_style = if hl_on {
-                    Style::default().fg(Color::White).bg(HIGHLIGHT_BG)
+                    Style::default().fg(Color::White).bg(bg)
                 } else if hl {
                     Style::default().fg(Color::Gray)
                 } else {
@@ -2888,14 +3526,30 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 let util = u.cpu_secs / denom * 100.0;
                 Row::new(vec![
-                    Cell::from(Span::styled(
-                        if sel { "▶" } else { "-" },
-                        if sel {
-                            Style::default().fg(Color::Cyan).bold()
-                        } else {
-                            Style::default()
-                        },
-                    )),
+                    Cell::from(if run_sel {
+                        // the contribution column replaces the leading "#"
+                        // column for the duration of the selection
+                        Span::styled(
+                            match contrib {
+                                Some(c) => fmt_pct(c * 100.0),
+                                None => "–".to_string(),
+                            },
+                            if hl_on {
+                                Style::default().fg(Color::White).bold()
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            },
+                        )
+                    } else {
+                        Span::styled(
+                            if sel { "▶" } else { "-" },
+                            if sel {
+                                Style::default().fg(Color::Cyan).bold()
+                            } else {
+                                Style::default()
+                            },
+                        )
+                    }),
                     Cell::from(Span::styled(trunc(&u.user, 9), fg(Style::default().fg(color)))),
                     Cell::from(Span::styled(fmt_pct(util), fg(Style::default().fg(sev(util))))),
                     Cell::from(Span::styled(
@@ -2927,23 +3581,19 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 .style(row_style)
             })
             .collect();
-        let widths = [
-            Constraint::Length(3),
-            Constraint::Length(9),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(7),
-            Constraint::Length(8),
-        ];
-        let table = Table::new(rows, widths).header(header).flex(Flex::Start);
+        let widths = users_widths(run_sel);
+        let table = Table::new(rows, widths.iter().copied())
+            .header(header)
+            .flex(Flex::Start);
         f.render_widget(table, users_area);
         let drawn = (sorted.len().saturating_sub(app.uscroll)).min(visible);
+        let user_cap = if run_sel { 8 } else { 9 };
         if let Some((mx, my)) = app.mouse
             && my > app.users_area.y
             && my < app.users_area.y + 1 + drawn as u16
-            && col_at_left(mx, &app.users_area, &USERS_WIDTHS) == Some(1)
+            && col_at_widths(mx, &app.users_area, users_widths(run_sel)) == Some(1)
             && let Some(u) = sorted.get(app.uscroll + (my - app.users_area.y - 1) as usize)
-            && u.user.chars().count() > 9
+            && u.user.chars().count() > user_cap
         {
             app.hover = Some((u.user.clone(), mx, my));
         }
@@ -2967,6 +3617,8 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sorted: Vec<&Antag> = ants.iter().collect();
     let (proc_by_pid, proc_by_comm) = proc_overlap(s);
     sort_ants(&mut sorted, app.ants_sort, &proc_by_pid, &proc_by_comm);
+    let hl = app.highlight.clone();
+    apply_pin(&mut sorted, &mut app.pin_ant, |a| is_pinned_ant(a, &hl));
     let visible = ainner.height.saturating_sub(1).max(1) as usize;
     let total = sorted.len();
     if total > visible {
@@ -2989,13 +3641,18 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
     .iter()
     .map(|h| h.to_string())
     .collect();
-    headers[app.ants_sort.0] = format!(
-        "{}{}",
-        headers[app.ants_sort.0],
-        if app.ants_sort.1 { " ▲" } else { " ▼" }
-    );
+    if run_sel {
+        headers[0] = "contribution".to_string();
+    }
+    if app.ants_sort.0 < headers.len() {
+        headers[app.ants_sort.0] = format!(
+            "{}{}",
+            headers[app.ants_sort.0],
+            if app.ants_sort.1 { " ▲" } else { " ▼" }
+        );
+    }
     let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
-    let cmd_w = (ainner.width as usize).saturating_sub(53);
+    let cmd_w = (ainner.width as usize).saturating_sub(if run_sel { 59 } else { 53 });
     let denom = if app.live {
         (s.live_dt * cpu_cores(s)).max(1.0)
     } else {
@@ -3018,6 +3675,18 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                     })
                 })
                 .unwrap_or(false);
+            let contrib = ant_shares.as_ref().and_then(|(by_pid, by_comm)| {
+                if a.pid >= 0 {
+                    by_pid.get(&a.pid).copied()
+                } else {
+                    by_comm.get(a.comm.as_str()).copied()
+                }
+            });
+            let bg = if hl_on {
+                contrib.map(contribution_color).unwrap_or(HIGHLIGHT_BG)
+            } else {
+                HIGHLIGHT_BG
+            };
             let fg = |s: Style| {
                 if hl_on {
                     s.fg(Color::White)
@@ -3028,7 +3697,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             };
             let row_style = if hl_on {
-                Style::default().fg(Color::White).bg(HIGHLIGHT_BG)
+                Style::default().fg(Color::White).bg(bg)
             } else if hl {
                 Style::default().fg(Color::Gray)
             } else {
@@ -3046,14 +3715,30 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .copied();
             let util = a.cpu_secs / denom * 100.0;
             Row::new(vec![
-                Cell::from(Span::styled(
-                    if sel { "▶" } else { "-" },
-                    if sel {
-                        Style::default().fg(Color::Cyan).bold()
-                    } else {
-                        Style::default()
-                    },
-                )),
+                Cell::from(if run_sel {
+                    // the contribution column replaces the leading "#"
+                    // column for the duration of the selection
+                    Span::styled(
+                        match contrib {
+                            Some(c) => fmt_pct(c * 100.0),
+                            None => "–".to_string(),
+                        },
+                        if hl_on {
+                            Style::default().fg(Color::White).bold()
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    )
+                } else {
+                    Span::styled(
+                        if sel { "▶" } else { "-" },
+                        if sel {
+                            Style::default().fg(Color::Cyan).bold()
+                        } else {
+                            Style::default()
+                        },
+                    )
+                }),
                 Cell::from(Span::styled(trunc(&a.user, 8), fg(Style::default().fg(color)))),
                 Cell::from(Span::styled(trunc(&a.comm, 12), fg(Style::default()))),
                 Cell::from(Span::styled(fmt_pct(util), fg(Style::default().fg(sev(util))))),
@@ -3083,16 +3768,8 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .style(row_style)
         })
         .collect();
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Length(8),
-        Constraint::Length(12),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(7),
-        Constraint::Min(10),
-    ];
-    let table = Table::new(rows, widths).header(header);
+    let widths = ants_widths(run_sel);
+    let table = Table::new(rows, widths.iter().copied()).header(header);
     f.render_widget(table, ants_area);
     let drawn = (sorted.len().saturating_sub(app.ascroll)).min(visible);
     if let Some((mx, my)) = app.mouse
@@ -3100,14 +3777,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         && my < app.ants_area.y + 1 + drawn as u16
         && let Some(a) = sorted.get(app.ascroll + (my - app.ants_area.y - 1) as usize)
     {
-        let [_sel, acols_area] =
-            Layout::horizontal([Constraint::Length(0), Constraint::Fill(0)])
-                .areas(Rect::new(0, 0, ants_area.width, 1));
-        let acol_rects =
-            Layout::horizontal(widths).flex(Flex::Start).spacing(1).split(acols_area);
-        let col = acol_rects.iter().position(|r| {
-            mx >= ants_area.x + r.x && mx < ants_area.x + r.x + r.width
-        });
+        let col = col_at_widths(mx, &app.ants_area, ants_widths(run_sel));
         let full = match col {
             Some(1) => Some((a.user.as_str(), 8)),
             Some(2) => Some((a.comm.as_str(), 12)),
@@ -3157,9 +3827,62 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
-const RUNS_FIXED: [u16; 10] = [6, 6, 6, 6, 6, 8, 8, 7, 6, 8];
-const USERS_WIDTHS: [u16; 6] = [3, 9, 8, 8, 7, 8];
-const ANTS_FIXED: [u16; 6] = [3, 8, 12, 8, 8, 7];
+const USERS_WIDTHS: [Constraint; 6] = [
+    Constraint::Length(3),
+    Constraint::Length(9),
+    Constraint::Length(8),
+    Constraint::Length(8),
+    Constraint::Length(7),
+    Constraint::Length(8),
+];
+/// Users table layout while an experiment run is selected: the "contribution"
+/// column replaces the leading "#" column.
+const USERS_WIDTHS_SEL: [Constraint; 6] = [
+    Constraint::Length(12),
+    Constraint::Length(8),
+    Constraint::Length(7),
+    Constraint::Length(7),
+    Constraint::Length(6),
+    Constraint::Length(7),
+];
+const ANTS_WIDTHS: [Constraint; 7] = [
+    Constraint::Length(3),
+    Constraint::Length(8),
+    Constraint::Length(12),
+    Constraint::Length(8),
+    Constraint::Length(8),
+    Constraint::Length(7),
+    Constraint::Min(10),
+];
+/// Processes table layout while an experiment run is selected: the
+/// "contribution" column replaces the leading "#" column.
+const ANTS_WIDTHS_SEL: [Constraint; 7] = [
+    Constraint::Length(12),
+    Constraint::Length(8),
+    Constraint::Length(12),
+    Constraint::Length(7),
+    Constraint::Length(7),
+    Constraint::Length(6),
+    Constraint::Min(10),
+];
+
+/// The users-table widths for the current selection state.
+fn users_widths(run_sel: bool) -> &'static [Constraint] {
+    if run_sel {
+        &USERS_WIDTHS_SEL
+    } else {
+        &USERS_WIDTHS
+    }
+}
+
+/// The processes-table widths for the current selection state.
+fn ants_widths(run_sel: bool) -> &'static [Constraint] {
+    if run_sel {
+        &ANTS_WIDTHS_SEL
+    } else {
+        &ANTS_WIDTHS
+    }
+}
 
 fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> Ordering {
     match (a, b) {
@@ -3564,10 +4287,13 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let all = buffer_text(&mut terminal);
         assert!(
-            all.contains("Get familiar with the scores and numbers"),
+            all.contains("Welcome to server-spy"),
             "first-run popup missing"
         );
-        assert!(all.contains("[ got it ]"), "dismiss button missing");
+        assert!(
+            all.contains("[Close and never show again]"),
+            "dismiss button missing"
+        );
         // 'h' from the first-run popup dismisses it and opens help
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         assert!(!app.first_run, "popup dismissed");
@@ -3590,7 +4316,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let pop = app.first_run_rect.expect("popup rect recorded");
-        // 120x40 -> pop centered at (33, 15) 54x9, button row inner.y + 6
+        // 120x40 -> pop centered at (33, 17) 54x7, button row inner.y + 4
         // a mouse move (even over the popup) must not dismiss it
         handle_mouse(
             &mut app,
@@ -3625,6 +4351,27 @@ mod tests {
             },
         );
         assert!(!app.first_run, "clicking [ got it ] dismisses the notice");
+    }
+
+    #[test]
+    fn first_run_popup_bullets_on_own_rows() {
+        let mut app = app_with_run("x");
+        app.first_run = true;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&mut terminal);
+        let bullet1 = rows.iter().position(|r| r.contains("• -f"));
+        let bullet2 = rows.iter().position(|r| r.contains("• h"));
+        let title = rows.iter().position(|r| r.contains("Welcome to server-spy"));
+        let btn = rows.iter().position(|r| r.contains("[Close and never show again]"));
+        assert!(title.is_some(), "title missing");
+        assert!(bullet1.is_some(), "first bullet missing");
+        assert!(bullet2.is_some(), "second bullet missing");
+        assert!(btn.is_some(), "button missing");
+        assert_eq!(bullet1.unwrap(), title.unwrap() + 2, "bullet 1 not on its own row below title");
+        assert_eq!(bullet2.unwrap(), title.unwrap() + 3, "bullet 2 not on its own row below bullet 1");
+        assert_eq!(btn.unwrap(), title.unwrap() + 5, "button not below bullets");
     }
 
     #[test]
@@ -3667,15 +4414,28 @@ mod tests {
         if let Some(s) = &mut app.snapshot {
             s.conditions = c;
         }
-        let backend = TestBackend::new(42, 9);
+        let backend = TestBackend::new(60, 9);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_stats(f, &mut app, Rect::new(0, 0, 42, 9)))
+            .draw(|f| draw_stats(f, &mut app, Rect::new(0, 0, 60, 9)))
             .unwrap();
         let all = buffer_text(&mut terminal);
-        for token in ["med", "MAD", "[sentence]", "[table]"] {
+        for token in [
+            "metric",
+            "congestion",
+            "wait%",
+            "median",
+            "P90",
+            "MAD%",
+            "mean",
+            "sd",
+            "max",
+            "[sentence]",
+            "[table]",
+        ] {
             assert!(all.contains(token), "stats pane missing {token}");
         }
+        assert!(!all.contains("ci"), "no 'ci' abbreviation in the stats pane");
         assert!(
             !app.stat_copy_area.is_empty() && !app.stat_table_area.is_empty(),
             "copy buttons have click areas"
@@ -3689,10 +4449,10 @@ mod tests {
     #[test]
     fn stats_pane_empty_state() {
         let mut app = app_with_run("x");
-        let backend = TestBackend::new(42, 9);
+        let backend = TestBackend::new(60, 9);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_stats(f, &mut app, Rect::new(0, 0, 42, 9)))
+            .draw(|f| draw_stats(f, &mut app, Rect::new(0, 0, 60, 9)))
             .unwrap();
         let all = buffer_text(&mut terminal);
         assert!(all.contains("no completed runs yet"), "{all}");
@@ -3763,14 +4523,34 @@ mod tests {
     }
 
     #[test]
-    fn col_at_maps_clicks() {
+    fn col_at_widths_maps_runs_columns() {
         let area = Rect::new(10, 0, 100, 5);
-        assert_eq!(col_at(11, &area, &RUNS_FIXED, 0), Some(0));
-        let min_w = 100 - RUNS_FIXED.iter().sum::<u16>() - (RUNS_FIXED.len() + 1) as u16;
-        let wall_start = 10 + min_w;
-        assert_eq!(col_at(wall_start + 2, &area, &RUNS_FIXED, 0), Some(1));
-        assert_eq!(col_at(10 + 99, &area, &RUNS_FIXED, 0), Some(10));
-        assert_eq!(col_at(5, &area, &RUNS_FIXED, 0), None);
+        let widths = runs_widths(100);
+        // params is flexible: 100 - 69 fixed - 9 gaps = 22; the next column
+        // (congestion) starts one cell later and is 12 wide
+        assert_eq!(col_at_widths(10 + 22 - 1, &area, &widths), Some(0));
+        assert_eq!(col_at_widths(10 + 22 + 1, &area, &widths), Some(1));
+        assert_eq!(col_at_widths(10 + 22 + 1 + 11, &area, &widths), Some(1));
+        assert_eq!(col_at_widths(10 + 22 + 1 + 12, &area, &widths), None);
+        assert_eq!(col_at_widths(10 + 22 + 1 + 13, &area, &widths), Some(2));
+        assert_eq!(col_at_widths(10 + 99, &area, &widths), Some(9));
+        assert_eq!(col_at_widths(5, &area, &widths), None);
+        assert_eq!(col_at_widths(10 + 100, &area, &widths), None);
+    }
+
+    #[test]
+    fn col_at_widths_maps_ants_columns() {
+        let area = Rect::new(0, 0, 70, 5);
+        // 3 + 8 + 12 + 8 + 8 + 7 fixed, cmdline Min(10) absorbs the rest
+        let mut cur = 0u16;
+        let mut expected = vec![3u16, 8, 12, 8, 8, 7];
+        expected.push(70 - expected.iter().sum::<u16>() - 6);
+        for (i, w) in expected.iter().enumerate() {
+            assert_eq!(col_at_widths(cur + w - 1, &area, &ANTS_WIDTHS), Some(i));
+            cur += w + 1;
+        }
+        assert_eq!(col_at_widths(69, &area, &ANTS_WIDTHS), Some(6));
+        assert_eq!(col_at_widths(71, &area, &ANTS_WIDTHS), None);
     }
 
     #[test]
@@ -3778,22 +4558,155 @@ mod tests {
         let area = Rect::new(0, 0, 70, 5);
         let mut cur = 0u16;
         for (i, w) in USERS_WIDTHS.iter().enumerate() {
-            assert_eq!(col_at_left(cur + w - 1, &area, &USERS_WIDTHS), Some(i));
-            cur += w + 1;
+            let len: u16 = match w {
+                Constraint::Length(l) => *l,
+                _ => panic!("users widths are fixed"),
+            };
+            assert_eq!(col_at_widths(cur + len - 1, &area, &USERS_WIDTHS), Some(i));
+            cur += len + 1;
         }
-        assert_eq!(col_at_left(69, &area, &USERS_WIDTHS), None);
-        assert_eq!(col_at_left(71, &area, &USERS_WIDTHS), None);
+        assert_eq!(col_at_widths(69, &area, &USERS_WIDTHS), None);
+        assert_eq!(col_at_widths(71, &area, &USERS_WIDTHS), None);
+        // selected layout has the contribution column at the front
+        assert_eq!(col_at_widths(6, &area, users_widths(true)), Some(0));
+        assert_eq!(col_at_widths(70, &area, users_widths(true)), None);
     }
 
     #[test]
-    fn col_at_ants_mapping() {
-        let area = Rect::new(0, 0, 70, 5);
-        let mut cur = 0u16;
-        for (i, w) in ANTS_FIXED.iter().enumerate() {
-            assert_eq!(col_at(cur + w - 1, &area, &ANTS_FIXED, 6), Some(i));
-            cur += w + 1;
-        }
-        assert_eq!(col_at(69, &area, &ANTS_FIXED, 6), Some(6));
+    fn run_contribution_shares_normalize_by_cpu() {
+        let mut r = run(None, 0.0);
+        r.ants = vec![
+            RunAnt { pid: 1, comm: "a".into(), cpu_secs: 4.0, rss: 0 },
+            RunAnt { pid: 2, comm: "b".into(), cpu_secs: 2.0, rss: 0 },
+            RunAnt { pid: 3, comm: "c".into(), cpu_secs: 1.0, rss: 0 },
+        ];
+        r.run_users = vec![
+            RunUser { user: "alice".into(), cpu_secs: 6.0, rss: 0, procs: 2 },
+            RunUser { user: "bob".into(), cpu_secs: 2.0, rss: 0, procs: 1 },
+        ];
+        let (by_pid, by_comm) = run_ant_shares(&r).unwrap();
+        assert!((by_pid[&1] - 4.0 / 7.0).abs() < 1e-9);
+        assert!((by_pid[&2] - 2.0 / 7.0).abs() < 1e-9);
+        assert!((by_pid[&3] - 1.0 / 7.0).abs() < 1e-9);
+        assert_eq!(by_comm["a"], by_pid[&1]);
+        let users = run_user_shares(&r).unwrap();
+        assert!((users["alice"] - 0.75).abs() < 1e-9);
+        assert!((users["bob"] - 0.25).abs() < 1e-9);
+        // nothing to attribute -> None
+        let empty = run(None, 0.0);
+        assert!(run_ant_shares(&empty).is_none());
+        assert!(run_user_shares(&empty).is_none());
+    }
+
+    #[test]
+    fn run_contribution_shares_are_mem_aware() {
+        let mut r = run(None, 0.0);
+        r.wall = 10.0;
+        r.wait_secs = 10.0;
+        r.psi = [0.0, 50.0, 0.0]; // memory-dominated congestion
+        r.ants = vec![
+            RunAnt { pid: 1, comm: "make".into(), cpu_secs: 40.0, rss: 1000 },
+            RunAnt { pid: 2, comm: "matlab".into(), cpu_secs: 10.0, rss: 3000 },
+        ];
+        r.run_users = vec![
+            RunUser { user: "alice".into(), cpu_secs: 40.0, rss: 1000, procs: 1 },
+            RunUser { user: "carol".into(), cpu_secs: 10.0, rss: 3000, procs: 1 },
+        ];
+        // attr: 10s wait vs 5s mem stall -> cpu weight 2/3, mem weight 1/3
+        let (by_pid, _) = run_ant_shares(&r).unwrap();
+        // make: 2/3*0.8 + 1/3*0.25 = 0.6167 ; matlab: 2/3*0.2 + 1/3*0.75
+        assert!((by_pid[&1] - (2.0 / 3.0 * 0.8 + 1.0 / 3.0 * 0.25)).abs() < 1e-9);
+        assert!((by_pid[&2] - (2.0 / 3.0 * 0.2 + 1.0 / 3.0 * 0.75)).abs() < 1e-9);
+        let users = run_user_shares(&r).unwrap();
+        assert!((users["alice"] - by_pid[&1]).abs() < 1e-9);
+        // matlab's memory share lifts it above its pure cpu share (0.2)
+        assert!(by_pid[&2] > 0.2, "mem-aware attribution boosts the mem hog");
+    }
+
+    #[test]
+    fn contribution_color_is_monotonic() {
+        let lum = |c: Color| match c {
+            Color::Rgb(r, g, b) => r as u16 + g as u16 + b as u16,
+            _ => 0,
+        };
+        assert!(lum(contribution_color(0.0)) < lum(contribution_color(0.5)));
+        assert!(lum(contribution_color(0.5)) < lum(contribution_color(1.0)));
+    }
+
+    #[test]
+    fn contribution_column_renders_with_selected_run() {
+        let mut app = app_with_run("x");
+        let s = app.snapshot.as_mut().unwrap();
+        s.users = vec![
+            UserShare { user: "alice".into(), cpu_secs: 60.0, wait_secs: 0.0, rss: 0, procs: 1 },
+            UserShare { user: "bob".into(), cpu_secs: 40.0, wait_secs: 0.0, rss: 0, procs: 1 },
+            UserShare { user: "carol".into(), cpu_secs: 10.0, wait_secs: 0.0, rss: 0, procs: 1 },
+        ];
+        s.antagonists = vec![
+            Antag { pid: 11, user: "alice".into(), comm: "make".into(), cmdline: "make -j32".into(), cpu_secs: 60.0, wait_secs: 0.0, rss: 0 },
+            Antag { pid: 12, user: "alice".into(), comm: "cc1".into(), cmdline: "cc1".into(), cpu_secs: 40.0, wait_secs: 0.0, rss: 0 },
+            Antag { pid: 13, user: "carol".into(), comm: "matlab".into(), cmdline: "matlab".into(), cpu_secs: 10.0, wait_secs: 0.0, rss: 0 },
+        ];
+        let r = &mut s.runs[0];
+        r.run_users = vec![
+            RunUser { user: "alice".into(), cpu_secs: 60.0, rss: 0, procs: 1 },
+            RunUser { user: "bob".into(), cpu_secs: 40.0, rss: 0, procs: 1 },
+        ];
+        r.ants = vec![
+            RunAnt { pid: 11, comm: "make".into(), cpu_secs: 60.0, rss: 0 },
+            RunAnt { pid: 12, comm: "cc1".into(), cpu_secs: 40.0, rss: 0 },
+        ];
+        app.highlight = Some(Highlight::Run(0));
+        let backend = TestBackend::new(180, 20);
+        let mut terminal = Terminal::new(backend.clone()).unwrap();
+        terminal
+            .draw(|f| draw_users_ants(f, &mut app, Rect::new(0, 0, 180, 20)))
+            .unwrap();
+        let all = buffer_text(&mut terminal);
+        assert!(all.contains("contribution"), "contribution column header present");
+        assert!(all.contains("60.0%"), "alice's contribution share");
+        assert!(all.contains("40.0%"), "bob's contribution share");
+        // carol is not part of the run: her contribution cell shows a dash
+        let rows = buffer_rows(&mut terminal);
+        let carol = rows.iter().find(|r| r.contains("carol")).expect("carol row");
+        assert!(carol.contains("–"), "non-contributors show a dash: {carol}");
+        // without a selected run there is no contribution column
+        app.highlight = None;
+        let mut terminal = Terminal::new(backend.clone()).unwrap();
+        terminal
+            .draw(|f| draw_users_ants(f, &mut app, Rect::new(0, 0, 180, 20)))
+            .unwrap();
+        let all = buffer_text(&mut terminal);
+        assert!(!all.contains("contribution"), "no contribution column without selection");
+    }
+
+    #[test]
+    fn base64_encodes_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // long text used by the latex table
+        let long = b"\\begin{tabular}{lrrrrrrr}\\toprule\nMetric & n & Median \\\\";
+        assert_eq!(base64(long), base64(long));
+        assert!(!base64(long).contains('\n'));
+    }
+
+    #[test]
+    fn osc52_payload_is_base64_wrapped() {
+        let payload = base64(b"\\toprule");
+        let seq = format!("\x1b]52;c;{payload}\x1b\\");
+        assert!(seq.starts_with("\x1b]52;c;"), "{seq:?}");
+        assert!(seq.ends_with("\x1b\\"), "{seq:?}");
+        assert!(!seq.contains('\n'), "{seq:?}");
+    }
+
+    #[test]
+    fn file_fallback_writes_the_text() {
+        let p = file_fallback_copy("hello").expect("file write");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
+        let _ = std::fs::remove_file(p);
     }
 
     #[test]
@@ -3805,6 +4718,77 @@ mod tests {
         assert_eq!(st, (3, true));
         toggle_sort(&mut st, 1);
         assert_eq!(st, (1, false));
+    }
+
+    #[test]
+    fn pinned_user_keeps_index_across_reorders() {
+        let a = UserShare { user: "alice".into(), cpu_secs: 1.0, wait_secs: 0.0, rss: 0, procs: 1 };
+        let b = UserShare { user: "bob".into(), cpu_secs: 2.0, wait_secs: 0.0, rss: 0, procs: 1 };
+        let c = UserShare { user: "carol".into(), cpu_secs: 3.0, wait_secs: 0.0, rss: 0, procs: 1 };
+        let mut pin = Some(1usize);
+        let overlap = HashMap::new();
+        // cpu desc: carol, bob, alice
+        let mut sorted: Vec<&UserShare> = vec![&c, &b, &a];
+        apply_pin(&mut sorted, &mut pin, |u| u.user == "alice");
+        assert_eq!(sorted[1].user, "alice");
+        // re-sorting the same data must not move the pinned row
+        sort_users(&mut sorted, (2, false), &overlap);
+        apply_pin(&mut sorted, &mut pin, |u| u.user == "alice");
+        assert_eq!(sorted[1].user, "alice", "pinned row keeps its index");
+        // a different sort order still leaves it pinned at its index
+        sort_users(&mut sorted, (1, true), &overlap);
+        apply_pin(&mut sorted, &mut pin, |u| u.user == "alice");
+        assert_eq!(sorted[1].user, "alice");
+        // once unpinned it sorts back in
+        let mut unpinned: Vec<&UserShare> = vec![&c, &b, &a];
+        sort_users(&mut unpinned, (2, false), &overlap);
+        assert_eq!(unpinned[2].user, "alice", "unpinned row sorts back in");
+    }
+
+    #[test]
+    fn pinned_run_stays_on_its_row_while_table_updates() {
+        let mut a = run(None, 0.0);
+        a.params = "run-a".into();
+        a.wall = 100.0;
+        let mut b = run(None, 0.0);
+        b.params = "run-b".into();
+        b.wall = 50.0;
+        let mut c = run(None, 0.0);
+        c.params = "run-c".into();
+        c.wall = 25.0;
+        c.order = 3;
+        let mut app = app_with_run("x");
+        if let Some(s) = &mut app.snapshot {
+            s.runs = vec![a, b, c];
+        }
+        app.runs_sort = (7, false);
+        app.highlight = Some(Highlight::Run(3));
+        app.pin_run = Some(0);
+        let draw = |app: &mut App| {
+            let backend = TestBackend::new(120, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| draw_runs(f, app, Rect::new(0, 0, 120, 20)))
+                .unwrap();
+            buffer_rows(&mut terminal)
+        };
+        // wall desc: run-a(100), run-b(50), run-c(25); run-c pinned to row 0
+        let rows = draw(&mut app);
+        assert!(rows[2].contains("run-c"), "pinned run stays on its row: {:?}", rows[2]);
+        // a new run that would sort above it must not move the pinned row
+        if let Some(s) = &mut app.snapshot {
+            let mut d = run(None, 0.0);
+            d.params = "run-d".into();
+            d.wall = 1000.0;
+            s.runs.push(d);
+        }
+        let rows = draw(&mut app);
+        assert!(rows[2].contains("run-c"), "pinned run does not shift: {:?}", rows[2]);
+        // clearing the highlight sorts it back in
+        app.highlight = None;
+        app.pin_run = None;
+        let rows = draw(&mut app);
+        assert!(rows[2].contains("run-d"), "unpinned runs sort normally: {:?}", rows[2]);
     }
 
     fn app_with_run(params: &str) -> App {
@@ -3853,6 +4837,14 @@ mod tests {
         let (w, h) = buf.area.as_size().into();
         (0..h)
             .flat_map(|y| (0..w).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect()
+    }
+
+    fn buffer_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+        let buf = terminal.backend().buffer();
+        let (w, h) = buf.area.as_size().into();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
             .collect()
     }
 
@@ -3965,5 +4957,6 @@ mod tests {
         assert!(!run_affected(&a, &Highlight::Run(8)));
         assert!(run_affected(&b, &Highlight::Run(8)));
     }
-}
 
+
+}

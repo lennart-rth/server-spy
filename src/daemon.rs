@@ -15,13 +15,10 @@ pub use crate::collector::exe_name;
 
 pub const PROTOCOL_VERSION: u8 = 13;
 
-#[cfg(target_env = "gnu")]
-unsafe extern "C" {
-    static program_invocation_name: *const libc::c_char;
-}
-
-/// Renames the current process (comm + cmdline) so tools like ps/top show it
-/// under a different name. Used for stealth mode.
+/// Renames the current process (comm + cmdline) so tools like ps/top/htop
+/// show it under a different name. Used for stealth mode: prctl sets the
+/// comm, and the original argv block is zeroed and replaced on the initial
+/// stack, so /proc/<pid>/cmdline stops leaking the old command line.
 pub fn rename_self(name: &str) {
     let name = &name[..name.len().min(15)];
     if let Ok(c) = std::ffi::CString::new(name) {
@@ -29,36 +26,87 @@ pub fn rename_self(name: &str) {
             libc::prctl(libc::PR_SET_NAME, c.as_ptr() as usize);
         }
     }
-    #[cfg(target_env = "gnu")]
     clobber_argv(name);
 }
 
-/// Overwrites the real argv memory (glibc `program_invocation_name`) so
-/// /proc/<pid>/cmdline shows only the new name. glibc-only: musl provides no
-/// way to locate the original argv buffer, so there the comm rename above is
-/// all we get.
-#[cfg(target_env = "gnu")]
+/// Overwrites the original argv memory with the new name. The argv strings
+/// live on the initial stack of the process, so we scan the stack mapping
+/// (found via /proc/self/maps) for the exact byte blob /proc/self/cmdline
+/// reports, zero it entirely and write the new name in its place. This works
+/// on glibc and musl alike (no reliance on glibc's `program_invocation_name`).
 fn clobber_argv(name: &str) {
-    let argc = std::env::args_os().count();
-    unsafe {
-        let start = program_invocation_name as *const u8;
-        let mut p = start;
-        let mut guard = 0;
-        for _ in 0..argc {
-            while *p != 0 && guard < 1 << 20 {
-                p = p.add(1);
-                guard += 1;
-            }
-            if *p != 0 {
-                return;
-            }
-            p = p.add(1);
-        }
-        let len = p.offset_from(start) as usize;
-        std::ptr::write_bytes(start as *mut u8, 0, len);
-        let n = name.len().min(len);
-        std::ptr::copy_nonoverlapping(name.as_ptr(), start as *mut u8, n);
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.is_empty() {
+        return;
     }
+    let mut blob = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            blob.push(0);
+        }
+        blob.extend_from_slice(a.as_encoded_bytes());
+    }
+    // A stack variable gives us an address inside the stack mapping; the
+    // argv block sits above it (closer to the initial stack top).
+    let mut probe = 0u8;
+    let sp = &mut probe as *mut u8 as usize;
+    let Some((lo, hi)) = stack_mapping(sp) else {
+        return;
+    };
+    let Some(found) = find_bytes(lo, hi.min(sp.saturating_add(64 << 20)), &blob) else {
+        return;
+    };
+    unsafe {
+        std::ptr::write_bytes(found as *mut u8, 0, blob.len());
+        let n = name.len().min(blob.len());
+        std::ptr::copy_nonoverlapping(name.as_ptr(), found as *mut u8, n);
+    }
+}
+
+/// The readable mapping containing the given stack address (i.e. our own
+/// stack, whose top holds the original argv block).
+fn stack_mapping(sp: usize) -> Option<(usize, usize)> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    for line in maps.lines() {
+        let mut it = line.split_whitespace();
+        let range = it.next()?;
+        let perms = it.next()?;
+        let (lo_s, hi_s) = range.split_once('-')?;
+        let lo = usize::from_str_radix(lo_s, 16).ok()?;
+        let hi = usize::from_str_radix(hi_s, 16).ok()?;
+        if !perms.contains('r') {
+            continue;
+        }
+        if lo <= sp && sp < hi {
+            return Some((lo, hi));
+        }
+    }
+    None
+}
+
+/// Scans for a byte pattern inside a mapped range (reads are safe: the
+/// range comes from /proc/self/maps and belongs to our own process).
+fn find_bytes(lo: usize, hi: usize, blob: &[u8]) -> Option<usize> {
+    if blob.is_empty() || hi <= lo {
+        return None;
+    }
+    let start = lo as *const u8;
+    let mut i = 0usize;
+    let first = blob[0];
+    while i + blob.len() <= hi - lo {
+        unsafe {
+            if *start.add(i) == first
+                && (blob.len() == 1 || {
+                    let a = std::slice::from_raw_parts(start.add(i), blob.len());
+                    a == blob
+                })
+            {
+                return Some(lo + i);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Verifies the daemon speaks the current protocol. Returns the connect error
@@ -316,6 +364,35 @@ pub fn run_foreground(
     run_foreground_with(interval, history_len, control)
 }
 
+/// The poll source for the daemon: the real collector, or the completely
+/// synthetic scenario when SERVER_SPY_SCENARIO points at a scenario file.
+enum Source {
+    Real(Box<Collector>),
+    Fake(Box<crate::scenario::Scenario>),
+}
+
+impl Source {
+    fn poll(&mut self) -> Snapshot {
+        match self {
+            Source::Real(c) => c.poll(),
+            Source::Fake(s) => s.poll(),
+        }
+    }
+
+    fn interval(&self) -> Duration {
+        match self {
+            Source::Real(c) => c.interval,
+            Source::Fake(s) => s.interval(),
+        }
+    }
+}
+
+fn scenario_env() -> Option<String> {
+    std::env::var("SERVER_SPY_SCENARIO")
+        .ok()
+        .filter(|p| !p.is_empty())
+}
+
 fn run_foreground_with(
     interval: Duration,
     history_len: usize,
@@ -339,27 +416,48 @@ fn run_foreground_with(
     // check below is the real gate; this also blocks guessing attempts).
     let _ = fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
 
-    let mut col = Collector::new(interval, control.clone(), history_len);
     let procs_shared: Arc<Mutex<Vec<Process>>> = Arc::new(Mutex::new(Vec::new()));
-    col.set_shared_procs(procs_shared.clone());
-    let latest: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(col.poll()));
+    let mut source = if let Some(path) = scenario_env() {
+        Source::Fake(Box::new(crate::scenario::Scenario::load(
+            &path,
+            control.clone(),
+        )?))
+    } else {
+        let mut col = Collector::new(interval, control.clone(), history_len);
+        col.set_shared_procs(procs_shared.clone());
+        Source::Real(Box::new(col))
+    };
+    if let Source::Fake(s) = &mut source {
+        s.set_shared_procs(procs_shared.clone());
+    }
+    let latest: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(source.poll()));
     // serialized snapshot cache (seq -> bytes): avoids re-encoding the same
     // snapshot for every client / repeat request
     let snap_cache: Arc<Mutex<(u64, Vec<u8>)>> = Arc::new(Mutex::new((0, Vec::new())));
 
     let latest2 = latest.clone();
+    let control2 = control.clone();
+    let mut last_gen = control2.generation();
     let collector_thread = std::thread::spawn(move || loop {
         if SHUTDOWN.load(AtomicOrdering::SeqCst) {
             break;
         }
-        *latest2.lock().unwrap() = col.poll();
+        *latest2.lock().unwrap() = source.poll();
         let step = Duration::from_millis(100);
         let mut slept = Duration::ZERO;
-        while slept < col.interval {
+        while slept < source.interval() {
             if SHUTDOWN.load(AtomicOrdering::SeqCst) {
                 break;
             }
-            let wait = step.min(col.interval - slept);
+            // a filter change must take effect on the next poll, not on the
+            // next full interval: wake up as soon as the rules generation
+            // moves, so runs appear immediately after confirming a filter
+            let now_gen = control2.generation();
+            if now_gen != last_gen {
+                last_gen = now_gen;
+                break;
+            }
+            let wait = step.min(source.interval() - slept);
             std::thread::sleep(wait);
             slept += wait;
         }

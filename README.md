@@ -6,7 +6,7 @@
 Measure how much resources your experiment actually gets, and who is stealing it from you.
 
 On smaller academic servers where multiple people run jobs, coordination is often hard or not reliable. 
-Use this tool to see exactly how much congestion was on the server while specific runs of yours were active.
+Use this tool to see exactly how much congestion was on the server while specific runs of yours were active and who is to blame for that.
 
 ## Demo
 
@@ -14,42 +14,39 @@ Use this tool to see exactly how much congestion was on the server while specifi
 
 
 # Who is this for
-- Researchers that run time or performance critical experiments on servers with multiple users and no slurm installed.
-- If you ever saw your experiment results and wondered why that one run was way slower than all the others, and you suspected that the server was busy at that moment.
+- Researchers that run time critical experiments on servers with multiple users and no proper setup like slurm.
+- If you ever saw your experiment results and wondered why that one run was way slower than all the others, and you suspected that the server was too busy at that moment.
 
 # What it does
-- **Auto-detect your experiment runs** — one row per distinct parameter combination of your worker, with the server resource conditions during that run and how much it got affected
-- **Easy, interpretable metrics** — the CI congestion score and scheduler wait, all explained below
-- **Debug what slows your experiment down** — which system component is the bottleneck on any given machine
-- **Who is slowing you down** — which other users and processes interfered with your experiment the most, which specific runs got disturbed — and the reverse: which user or process interfered with any given experiment run of yours
-- **LaTeX paper-ready export** — statistics table and report template quantifying the server environment and the fairness of resources across all your experiments
-- **Detach & reattach** — the daemon keeps recording in the background; close the TUI, come back later, attach again
+- **Auto-detect your experiment runs**: one row per distinct parameter combination of your worker, with the server resource conditions during that run and how much it got affected
+- **Easy, interpretable metrics**: single congestion score, scheduler induced wait time and per system attribution
+- **Debug what slows your experiment down**: which system component is the bottleneck on any given machine
+- **Who is slowing you down**: which other users and processes interfered with your experiment the most, which specific runs got disturbed. Or, which user or process interfered with any given experiment run of yours
+- **LaTeX paper-ready export**: statistics table and report template quantifying the server environment and the fairness of resources across all your experiments. REady to put in academic reports.
+- **Detach & reattach**: Tmux style daemon keeps recording in the background. Close the TUI, let it monitor, attach again later.
 
 # Metrics & scores
 
-Every run gets a small set of interpretable numbers:
-
-- **CI — congestion index (0–100)**: a composite of the CPU, memory and
-  I/O pressure the server showed while your run was active, combined with
-  the scheduler wait. `0` = idle machine, `100` = fully saturated.
-- **Scheduler wait (`wait%`)**: how long your run's processes (and, in the
-  lists, other users' processes) sat in the CPU runqueue compared to their
+- **congestion index**: a composite of the CPU, memory and
+  I/O pressure while your run was active, combined with
+  the scheduler induced wait time. `0` = idle machine, `100` = fully saturated.
+- **Scheduler wait (`wait%`)**: how long your run's processes sat in the CPU runqueue compared to their
   own work — `100%` means they waited just as long as they actually
   worked.
 - **Attribution split (`cpu%` / `mem%` / `io%`)**: which resource caused
-  the run's congestion, so you can tell "my run was slow" from "memory
-  pressure slowed my run down".
+  the run's congestion.
 - **Statistics pane**: distribution statistics (median, MAD, IQR, SD) of
-  the congestion scores across all completed runs — quantifying how
-  consistent the server conditions were — with one-click export of a LaTeX
-  sentence and table for your paper.
+  the congestion scores across all completed runs. To quantify how
+  consistent the server conditions were.
 
 # How to use
 Set a regex filter that is used to classify what processes are your experiment runs. For example if you have a runner script that launches multiple sub processes that run experiments with different parameters, server-spy automatically detects all parameter combinations and shows your different runs in a list, together with how the server was utilized while that specific run was active.
 
 The flow:
 - press `f` to define/update the filter
+- You can clik on single experiments runs to see what uses and proceses interferred with this one. and vice versa.
 - detach the TUI (`d`)
+- re-attach bu starting the tui again
 - terminate (`q`) to quit and stop the monitoring
 - save and load results (`s` / `l`)
 
@@ -106,7 +103,7 @@ rm -rf ~/.local/state/server-spy  # config and logs
 
 
 # Commands
-`server-spy` to start the TUI
+`server-spy` to start or attach the TUI
 
 | Command | What it does |
 |---|---|

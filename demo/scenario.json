@@ -1,0 +1,831 @@
+{
+  "interval": 1.0,
+  "duration": 125.0,
+  "cores": 64,
+  "mem_total_mb": 131072,
+  "target": "",
+  "runs": [
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 0.0,
+      "end": 14.0,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 800,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 2.0,
+      "end": 15.5,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 15.5,
+      "end": 19.5,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 700,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 17.5,
+      "end": 21.0,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ],
+      "spikes": [
+        {
+          "at": 18.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 19.5,
+      "end": 23.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 900,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 21.5,
+      "end": 25.0,
+      "cpu_cores": 7,
+      "wait_pct": 7,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 23.5,
+      "end": 27.5,
+      "cpu_cores": 10,
+      "wait_pct": 10,
+      "mem_mb": 1600,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 25.5,
+      "end": 29.0,
+      "cpu_cores": 8,
+      "wait_pct": 12,
+      "mem_mb": 1400,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 27.5,
+      "end": 31.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 29.5,
+      "end": 33.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ],
+      "spikes": [
+        {
+          "at": 30.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 31.5,
+      "end": 35.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 750,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 33.5,
+      "end": 37.0,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 35.5,
+      "end": 39.5,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1300,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 37.5,
+      "end": 41.0,
+      "cpu_cores": 8,
+      "wait_pct": 7,
+      "mem_mb": 950,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 39.5,
+      "end": 43.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 41.5,
+      "end": 45.0,
+      "cpu_cores": 7,
+      "wait_pct": 10,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ],
+      "spikes": [
+        {
+          "at": 42.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 43.5,
+      "end": 47.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 800,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 45.5,
+      "end": 49.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 47.5,
+      "end": 51.5,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 700,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 49.5,
+      "end": 53.0,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 51.5,
+      "end": 55.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 900,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 53.5,
+      "end": 57.0,
+      "cpu_cores": 7,
+      "wait_pct": 7,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ],
+      "spikes": [
+        {
+          "at": 54.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 55.5,
+      "end": 59.5,
+      "cpu_cores": 10,
+      "wait_pct": 10,
+      "mem_mb": 1600,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 57.5,
+      "end": 61.0,
+      "cpu_cores": 8,
+      "wait_pct": 12,
+      "mem_mb": 1400,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 59.5,
+      "end": 63.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 61.5,
+      "end": 65.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 63.5,
+      "end": 67.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 750,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 65.5,
+      "end": 69.0,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ],
+      "spikes": [
+        {
+          "at": 66.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 67.5,
+      "end": 71.5,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1300,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 69.5,
+      "end": 73.0,
+      "cpu_cores": 8,
+      "wait_pct": 7,
+      "mem_mb": 950,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 71.5,
+      "end": 75.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 73.5,
+      "end": 77.0,
+      "cpu_cores": 7,
+      "wait_pct": 10,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 75.5,
+      "end": 79.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 800,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 77.5,
+      "end": 81.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ],
+      "spikes": [
+        {
+          "at": 78.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 79.5,
+      "end": 83.5,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 700,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 81.5,
+      "end": 85.0,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 83.5,
+      "end": 87.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 900,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 85.5,
+      "end": 89.0,
+      "cpu_cores": 7,
+      "wait_pct": 7,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 87.5,
+      "end": 91.5,
+      "cpu_cores": 10,
+      "wait_pct": 10,
+      "mem_mb": 1600,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 89.5,
+      "end": 93.0,
+      "cpu_cores": 8,
+      "wait_pct": 12,
+      "mem_mb": 1400,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ],
+      "spikes": [
+        {
+          "at": 90.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 91.5,
+      "end": 95.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 93.5,
+      "end": 97.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1000,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 95.5,
+      "end": 99.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 750,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 97.5,
+      "end": 101.0,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=4096 --nprobe=16 --dataset=sift-1m",
+      "start": 99.5,
+      "end": 103.5,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1300,
+      "noise": 0.3,
+      "interference": [
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=64 --dataset=deep-10m",
+      "start": 101.5,
+      "end": 105.0,
+      "cpu_cores": 8,
+      "wait_pct": 7,
+      "mem_mb": 950,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "python3"
+      ],
+      "spikes": [
+        {
+          "at": 102.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=bruteforce --dataset=glove-100",
+      "start": 103.5,
+      "end": 107.5,
+      "cpu_cores": 6,
+      "wait_pct": 5,
+      "mem_mb": 850,
+      "noise": 0.3,
+      "interference": [
+        "rsync"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=64 --dataset=laion-10m",
+      "start": 105.5,
+      "end": 109.0,
+      "cpu_cores": 7,
+      "wait_pct": 10,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "matlab",
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=64 --dataset=glove-100",
+      "start": 107.5,
+      "end": 111.5,
+      "cpu_cores": 6,
+      "wait_pct": 4,
+      "mem_mb": 800,
+      "noise": 0.3,
+      "interference": [
+        "make"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=32 --ef=128 --dataset=sift-1m",
+      "start": 109.5,
+      "end": 113.0,
+      "cpu_cores": 8,
+      "wait_pct": 6,
+      "mem_mb": 1100,
+      "noise": 0.3,
+      "interference": [
+        "make",
+        "matlab"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=ivf --nlist=1024 --nprobe=32 --dataset=deep-10m",
+      "start": 111.5,
+      "end": 115.5,
+      "cpu_cores": 5,
+      "wait_pct": 3,
+      "mem_mb": 700,
+      "noise": 0.3,
+      "interference": [
+        "python3"
+      ]
+    },
+    {
+      "params": "bench_ann.py --index=hnsw --M=16 --ef=256 --dataset=laion-10m",
+      "start": 113.5,
+      "end": 117.0,
+      "cpu_cores": 7,
+      "wait_pct": 8,
+      "mem_mb": 1200,
+      "noise": 0.3,
+      "interference": [
+        "rsync",
+        "make"
+      ],
+      "spikes": [
+        {
+          "at": 114.5,
+          "len": 1.5,
+          "wait_pct": 45.0
+        }
+      ]
+    }
+  ],
+  "processes": [
+    {
+      "user": "alice",
+      "comm": "make",
+      "cmdline": "make -j32",
+      "start": 0.0,
+      "end": 125.0,
+      "cpu_cores": 12.0,
+      "wait_pct": 8.0,
+      "mem_mb": 900,
+      "noise": 0.5,
+      "spikes": [
+        {
+          "at": 40.0,
+          "len": 6.0,
+          "cpu_cores": 30.0,
+          "wait_pct": 55.0,
+          "mem_mb": 1500
+        },
+        {
+          "at": 85.0,
+          "len": 8.0,
+          "cpu_cores": 34.0,
+          "wait_pct": 60.0,
+          "mem_mb": 1800
+        }
+      ]
+    },
+    {
+      "user": "alice",
+      "comm": "cc1",
+      "cmdline": "cc1 -O2 -fPIC",
+      "start": 8.0,
+      "end": 125.0,
+      "cpu_cores": 2.0,
+      "wait_pct": 5.0,
+      "mem_mb": 250,
+      "noise": 0.6
+    },
+    {
+      "user": "bob",
+      "comm": "python3",
+      "cmdline": "python3 prep_data.py --shards=8",
+      "start": 0.0,
+      "end": 125.0,
+      "cpu_cores": 3.0,
+      "wait_pct": 10.0,
+      "mem_mb": 3000,
+      "noise": 0.4,
+      "spikes": [
+        {
+          "at": 55.0,
+          "len": 5.0,
+          "cpu_cores": 8.0,
+          "wait_pct": 25.0
+        }
+      ]
+    },
+    {
+      "user": "carol",
+      "comm": "matlab",
+      "cmdline": "matlab -batch run_sim.m",
+      "start": 5.0,
+      "end": 125.0,
+      "cpu_cores": 5.0,
+      "wait_pct": 15.0,
+      "mem_mb": 4200,
+      "noise": 0.3,
+      "spikes": [
+        {
+          "at": 62.0,
+          "len": 4.0,
+          "cpu_cores": 18.0,
+          "wait_pct": 45.0,
+          "mem_mb": 2000
+        }
+      ]
+    },
+    {
+      "user": "dave",
+      "comm": "rsync",
+      "cmdline": "rsync -aH /data/raw/ /scratch/",
+      "start": 20.0,
+      "end": 125.0,
+      "cpu_cores": 1.5,
+      "wait_pct": 12.0,
+      "mem_mb": 180,
+      "noise": 0.8,
+      "spikes": [
+        {
+          "at": 70.0,
+          "len": 6.0,
+          "cpu_cores": 6.0,
+          "wait_pct": 60.0
+        }
+      ]
+    },
+    {
+      "user": "idleuser",
+      "comm": "sleep",
+      "cmdline": "sleep 3600",
+      "start": 0.0,
+      "end": 125.0,
+      "cpu_cores": 0.0,
+      "wait_pct": 0.0,
+      "mem_mb": 8,
+      "noise": 0.0
+    }
+  ]
+}

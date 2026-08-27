@@ -1,0 +1,21 @@
+[
+  {"t": 0.0, "act": "shell_type", "text": "server-spy", "rate": 0.05},
+  {"t": 0.5, "act": "shell_enter"},
+  {"t": 1.9, "act": "wait_text", "pattern": "Experiment Filter"},
+  {"t": 2.9, "act": "wait_gone", "pattern": "Experiment Filter"},
+  {"t": 3.2, "act": "sleep"},
+  {"t": 7.0, "act": "key", "key": "f"},
+  {"t": 7.6, "act": "keys", "text": "bench_ann", "rate": 0.15},
+  {"t": 9.6, "act": "key", "key": "enter"},
+  {"t": 10.2, "act": "sleep"},
+  {"t": 10.7, "act": "sort", "table": "runs", "col": 1},
+  {"t": 12.7, "act": "click_run", "name": "2"},
+  {"t": 20.0, "act": "key", "key": "f"},
+  {"t": 20.6, "act": "keys", "text": ".*hnsw", "rate": 0.15},
+  {"t": 22.1, "act": "key", "key": "enter"},
+  {"t": 23.0, "act": "click_run", "name": "4"},
+  {"t": 26.0, "act": "key", "key": "h"},
+  {"t": 28.0, "act": "key", "key": "h"},
+  {"t": 28.5, "act": "sleep"},
+  {"t": 30.0, "act": "key", "key": "d"}
+]
