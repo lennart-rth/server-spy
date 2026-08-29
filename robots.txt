@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://lennart-rth.github.io/server-spy/sitemap.xml

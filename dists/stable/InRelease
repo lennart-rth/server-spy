@@ -1,0 +1,42 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Architectures: amd64 arm64
+Codename: stable
+Components: main
+Date: Sat, 29 Aug 2026 13:56:54 +0000
+Description: server-spy package repository
+Label: server-spy
+Origin: server-spy
+Suite: stable
+MD5Sum:
+ 3bbb49afc2928163d1078ac969ae1131              193 Release
+ c4d293bb818faa77197673b01f89656d             7707 main/binary-amd64/Packages
+ dd1bc85753914f7cfcce25a35a9885b4             3404 main/binary-amd64/Packages.gz
+ fbeac4e156d83138532e15ea4de7d4be             7706 main/binary-arm64/Packages
+ 379c35e190978690cedb14b4dfc792ed             3411 main/binary-arm64/Packages.gz
+SHA1:
+ f75100a925ae988233007c2cba59ce52eed81cff              193 Release
+ e1efc66aec84c24ff2234213d2a16dbb15d6535b             7707 main/binary-amd64/Packages
+ 503e2f5d7c7e3b1b821c96328171f20ea7ca8e1f             3404 main/binary-amd64/Packages.gz
+ c57122430d426c087f09bba8a6378efa1c4ea264             7706 main/binary-arm64/Packages
+ 7ec28fbe82987440e59362ffddee6d35a7d6867c             3411 main/binary-arm64/Packages.gz
+SHA256:
+ 24dcbd92f897ac34c310c81d593eff8b53c5e37751f976109e6fe3d2a376930b              193 Release
+ 54ad1650ad36a377591f827f22ab3ed6a9c636b03f4361c484679c3ba3946098             7707 main/binary-amd64/Packages
+ 1226c5cde82cf698c48a234006f4e6afda54f3465adbd0d2fcc1c5ee59e71436             3404 main/binary-amd64/Packages.gz
+ df9f29316a272d09e0ff77e45f9338b0c68176aa49f55a0120e003c0f56c4796             7706 main/binary-arm64/Packages
+ b01fd05b8a91ef37c3d595bf1b0eee772958d31735e394c3369abad216db7e4b             3411 main/binary-arm64/Packages.gz
+SHA512:
+ b09dd139d0f899dd4f361b99738487acda4ffa5b938cc8ce99ad390360830b1f7b6094bcb0ffe281d8ca13d7e55b518e664e3e3ea8733658384196b37634362b              193 Release
+ 239a61e69a6d868241f75416793fee2f1fce14c9e5a48273429b01db15a006c43d1d68dc8a125cc97fc497d66971d3df50e3cd24151cf35bc3193aed45077e2a             7707 main/binary-amd64/Packages
+ ca32ed669a34530d566cbfda093b6c3809d0df95d2fe5f727133884587a5760095c099ad350135562b0b4a831d00aa2cbf2a96fb59f44e26e38b5d3daa39b9b9             3404 main/binary-amd64/Packages.gz
+ 99940c086b4fa0ecb2af22936e38627d4cbcfb8821e49732f9cc3214fb56cefb339c8ce885dfcc3a6491b89497d6ec2c6492d2660f6e61bd04f952e91c6fe700             7706 main/binary-arm64/Packages
+ c0e6eb0a015ce0d34e6458be547e3e073482ea3d3e28abc44d53cdad339f9f429538d7fba33a7cf7f246ccbd4e5a692b30391c8358030aa10d86ff10548dddca             3411 main/binary-arm64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYIAB0WIQQTd9BG3CO74EKWArDyRedbfyc5qQUCapLlJgAKCRDyRedbfyc5
+qbNJAP4vOcYzeQ/zJj4UjeYaCK8bwf1Gs5nYEASskjshZYEquQD+J6G7WBw5wBkz
+Fa/mWKk63MErvk9NWGuqFpR+Whj8Sw0=
+=LoSC
+-----END PGP SIGNATURE-----
