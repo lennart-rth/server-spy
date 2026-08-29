@@ -13,7 +13,7 @@ use crate::procfs::Process;
 
 pub use crate::collector::exe_name;
 
-pub const PROTOCOL_VERSION: u8 = 13;
+pub const PROTOCOL_VERSION: u8 = 14;
 
 /// Renames the current process (comm + cmdline) so tools like ps/top/htop
 /// show it under a different name. Used for stealth mode: prctl sets the
@@ -798,6 +798,7 @@ mod tests {
         };
         s.runs.push(crate::collector::RunRow {
             params: "bench.py".into(),
+            comm: "bench.py".into(),
             roots: vec![1],
             wall: 10.0,
             cpu_secs: 5.0,

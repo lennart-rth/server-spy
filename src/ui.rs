@@ -1190,11 +1190,11 @@ fn script_dispatch(app: &mut App, act: ScriptAct) -> bool {
                 ),
                 "users" => (
                     app.users_area,
-                    col_center(&app.users_area, users_widths(run_sel), col),
+                    col_center(&app.users_area, &users_widths(app.users_area.width, run_sel), col),
                 ),
                 "ants" => (
                     app.ants_area,
-                    col_center(&app.ants_area, ants_widths(run_sel), col),
+                    col_center(&app.ants_area, &ants_widths(app.ants_area.width, run_sel), col),
                 ),
                 _ => return true,
             };
@@ -1607,7 +1607,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 && let Some(col) = col_at_widths(
                     m.column,
                     &app.users_area,
-                    users_widths(matches!(&app.highlight, Some(Highlight::Run(_)))),
+                    &users_widths(
+                        app.users_area.width,
+                        matches!(&app.highlight, Some(Highlight::Run(_))),
+                    ),
                 )
                 && col > 0
             {
@@ -1616,7 +1619,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 && let Some(col) = col_at_widths(
                     m.column,
                     &app.ants_area,
-                    ants_widths(matches!(&app.highlight, Some(Highlight::Run(_)))),
+                    &ants_widths(
+                        app.ants_area.width,
+                        matches!(&app.highlight, Some(Highlight::Run(_))),
+                    ),
                 )
                 && col > 0
             {
@@ -3474,7 +3480,18 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 if app.users_sort.1 { " ▲" } else { " ▼" }
             );
         }
-        let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
+        let header = Row::new(
+            headers
+                .into_iter()
+                .map(|h| Cell::from(Line::from(h).alignment(Alignment::Center))),
+        )
+        .style(Style::default().fg(Color::Cyan).bold());
+        let widths = users_widths(users_area.width, run_sel);
+        let col_rects = Layout::horizontal(widths.clone())
+            .flex(Flex::Start)
+            .spacing(1)
+            .split(Rect::new(0, 0, users_area.width, 1));
+        let user_cap = col_rects[1].width.saturating_sub(2).max(4) as usize;
         let rows: Vec<Row> = sorted
             .iter()
             .skip(app.uscroll)
@@ -3526,7 +3543,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 let util = u.cpu_secs / denom * 100.0;
                 Row::new(vec![
-                    Cell::from(if run_sel {
+                    center_cell(if run_sel {
                         // the contribution column replaces the leading "#"
                         // column for the duration of the selection
                         Span::styled(
@@ -3550,9 +3567,15 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                             },
                         )
                     }),
-                    Cell::from(Span::styled(trunc(&u.user, 9), fg(Style::default().fg(color)))),
-                    Cell::from(Span::styled(fmt_pct(util), fg(Style::default().fg(sev(util))))),
-                    Cell::from(Span::styled(
+                    center_cell(Span::styled(
+                        trunc(&u.user, user_cap),
+                        fg(Style::default().fg(color)),
+                    )),
+                    center_cell(Span::styled(
+                        fmt_pct(util),
+                        fg(Style::default().fg(sev(util))),
+                    )),
+                    center_cell(Span::styled(
                         match wait {
                             Some(w) => fmt_pct(w),
                             None => "—".to_string(),
@@ -3562,7 +3585,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                             None => Style::default().fg(Color::DarkGray),
                         }),
                     )),
-                    Cell::from(Span::styled(
+                    center_cell(Span::styled(
                         match runs {
                             Some(n) => format!("{n}"),
                             None => "–".to_string(),
@@ -3573,7 +3596,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                             _ => Style::default().fg(Color::DarkGray),
                         }),
                     )),
-                    Cell::from(Span::styled(
+                    center_cell(Span::styled(
                         fmt_pct(share),
                         fg(Style::default().fg(sev(share))),
                     )),
@@ -3581,17 +3604,16 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                 .style(row_style)
             })
             .collect();
-        let widths = users_widths(run_sel);
         let table = Table::new(rows, widths.iter().copied())
             .header(header)
             .flex(Flex::Start);
         f.render_widget(table, users_area);
         let drawn = (sorted.len().saturating_sub(app.uscroll)).min(visible);
-        let user_cap = if run_sel { 8 } else { 9 };
         if let Some((mx, my)) = app.mouse
             && my > app.users_area.y
             && my < app.users_area.y + 1 + drawn as u16
-            && col_at_widths(mx, &app.users_area, users_widths(run_sel)) == Some(1)
+            && col_at_widths(mx, &app.users_area, &users_widths(users_area.width, run_sel))
+                == Some(1)
             && let Some(u) = sorted.get(app.uscroll + (my - app.users_area.y - 1) as usize)
             && u.user.chars().count() > user_cap
         {
@@ -3651,8 +3673,19 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             if app.ants_sort.1 { " ▲" } else { " ▼" }
         );
     }
-    let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
-    let cmd_w = (ainner.width as usize).saturating_sub(if run_sel { 59 } else { 53 });
+    let header = Row::new(
+        headers
+            .into_iter()
+            .map(|h| Cell::from(Line::from(h).alignment(Alignment::Center))),
+    )
+    .style(Style::default().fg(Color::Cyan).bold());
+    let widths = ants_widths(ants_area.width, run_sel);
+    let col_rects = Layout::horizontal(widths.clone())
+        .flex(Flex::Start)
+        .spacing(1)
+        .split(Rect::new(0, 0, ants_area.width, 1));
+    let comm_cap = col_rects[2].width.saturating_sub(2).max(4) as usize;
+    let cmd_w = col_rects[6].width.saturating_sub(2).max(4) as usize;
     let denom = if app.live {
         (s.live_dt * cpu_cores(s)).max(1.0)
     } else {
@@ -3715,7 +3748,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .copied();
             let util = a.cpu_secs / denom * 100.0;
             Row::new(vec![
-                Cell::from(if run_sel {
+                center_cell(if run_sel {
                     // the contribution column replaces the leading "#"
                     // column for the duration of the selection
                     Span::styled(
@@ -3739,10 +3772,16 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                         },
                     )
                 }),
-                Cell::from(Span::styled(trunc(&a.user, 8), fg(Style::default().fg(color)))),
-                Cell::from(Span::styled(trunc(&a.comm, 12), fg(Style::default()))),
-                Cell::from(Span::styled(fmt_pct(util), fg(Style::default().fg(sev(util))))),
-                Cell::from(Span::styled(
+                center_cell(Span::styled(
+                    trunc(&a.user, 8),
+                    fg(Style::default().fg(color)),
+                )),
+                center_cell(Span::styled(trunc(&a.comm, comm_cap), fg(Style::default()))),
+                center_cell(Span::styled(
+                    fmt_pct(util),
+                    fg(Style::default().fg(sev(util))),
+                )),
+                center_cell(Span::styled(
                     match wait {
                         Some(w) => fmt_pct(w),
                         None => "—".to_string(),
@@ -3752,7 +3791,7 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
                         None => Style::default().fg(Color::DarkGray),
                     }),
                 )),
-                Cell::from(Span::styled(
+                center_cell(Span::styled(
                     match runs {
                         Some(n) => format!("{n}"),
                         None => "–".to_string(),
@@ -3768,7 +3807,6 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
             .style(row_style)
         })
         .collect();
-    let widths = ants_widths(run_sel);
     let table = Table::new(rows, widths.iter().copied()).header(header);
     f.render_widget(table, ants_area);
     let drawn = (sorted.len().saturating_sub(app.ascroll)).min(visible);
@@ -3777,10 +3815,10 @@ fn draw_users_ants(f: &mut Frame, app: &mut App, area: Rect) {
         && my < app.ants_area.y + 1 + drawn as u16
         && let Some(a) = sorted.get(app.ascroll + (my - app.ants_area.y - 1) as usize)
     {
-        let col = col_at_widths(mx, &app.ants_area, ants_widths(run_sel));
+        let col = col_at_widths(mx, &app.ants_area, &ants_widths(ants_area.width, run_sel));
         let full = match col {
             Some(1) => Some((a.user.as_str(), 8)),
-            Some(2) => Some((a.comm.as_str(), 12)),
+            Some(2) => Some((a.comm.as_str(), comm_cap)),
             Some(6) => Some((a.cmdline.as_str(), cmd_w)),
             _ => None,
         };
@@ -3827,6 +3865,12 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
+/// A table cell whose content is centered inside its column (the cell
+/// alignment is set on the line, not the cell itself).
+fn center_cell(span: Span<'static>) -> Cell<'static> {
+    Cell::from(Line::from(vec![span]).alignment(Alignment::Center))
+}
+
 const USERS_WIDTHS: [Constraint; 6] = [
     Constraint::Length(3),
     Constraint::Length(9),
@@ -3836,14 +3880,15 @@ const USERS_WIDTHS: [Constraint; 6] = [
     Constraint::Length(8),
 ];
 /// Users table layout while an experiment run is selected: the "contribution"
-/// column replaces the leading "#" column.
+/// column replaces the leading "#" column, and the user column reflows to
+/// keep the table from cramming the remaining columns together.
 const USERS_WIDTHS_SEL: [Constraint; 6] = [
     Constraint::Length(12),
     Constraint::Length(8),
-    Constraint::Length(7),
-    Constraint::Length(7),
     Constraint::Length(6),
-    Constraint::Length(7),
+    Constraint::Length(6),
+    Constraint::Length(5),
+    Constraint::Length(6),
 ];
 const ANTS_WIDTHS: [Constraint; 7] = [
     Constraint::Length(3),
@@ -3855,33 +3900,50 @@ const ANTS_WIDTHS: [Constraint; 7] = [
     Constraint::Min(10),
 ];
 /// Processes table layout while an experiment run is selected: the
-/// "contribution" column replaces the leading "#" column.
+/// "contribution" column replaces the leading "#" column, and the comm
+/// column reflows to keep the table from cramming the remaining columns
+/// together.
 const ANTS_WIDTHS_SEL: [Constraint; 7] = [
     Constraint::Length(12),
     Constraint::Length(8),
-    Constraint::Length(12),
+    Constraint::Length(8),
     Constraint::Length(7),
     Constraint::Length(7),
     Constraint::Length(6),
     Constraint::Min(10),
 ];
 
-/// The users-table widths for the current selection state.
-fn users_widths(run_sel: bool) -> &'static [Constraint] {
-    if run_sel {
-        &USERS_WIDTHS_SEL
-    } else {
-        &USERS_WIDTHS
+/// The users-table widths for the current selection state and panel width.
+/// While a run is selected the flexible user column absorbs the space freed
+/// up around the wider "contribution" column, so the other columns keep
+/// their size and stay readable.
+fn users_widths(total: u16, run_sel: bool) -> Vec<Constraint> {
+    if !run_sel {
+        return USERS_WIDTHS.to_vec();
     }
+    // 12 (contribution) + 6 + 6 + 5 + 6 fixed + 5 gaps; the user column
+    // takes the rest (never less than 8, never bloated past 14).
+    let user = total.saturating_sub(40).clamp(8, 14);
+    let mut w = USERS_WIDTHS_SEL.to_vec();
+    w[1] = Constraint::Length(user);
+    w
 }
 
-/// The processes-table widths for the current selection state.
-fn ants_widths(run_sel: bool) -> &'static [Constraint] {
-    if run_sel {
-        &ANTS_WIDTHS_SEL
-    } else {
-        &ANTS_WIDTHS
+/// The processes-table widths for the current selection state and panel
+/// width. While a run is selected the flexible comm column absorbs the space
+/// freed up around the wider "contribution" column; the cmdline column keeps
+/// absorbing whatever is left.
+fn ants_widths(total: u16, run_sel: bool) -> Vec<Constraint> {
+    if !run_sel {
+        return ANTS_WIDTHS.to_vec();
     }
+    // 12 (contribution) + 8 + 7 + 7 + 6 fixed + 6 gaps + 10 (cmdline min);
+    // the comm column takes the rest (never less than 8, never bloated
+    // past 14).
+    let comm = total.saturating_sub(56).clamp(8, 14);
+    let mut w = ANTS_WIDTHS_SEL.to_vec();
+    w[2] = Constraint::Length(comm);
+    w
 }
 
 fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> Ordering {
@@ -4051,6 +4113,7 @@ mod tests {
     fn run(wait: Option<f64>, psi: f64) -> RunRow {
         RunRow {
             params: "p".into(),
+            comm: "p".into(),
             roots: vec![],
             wall: 1.0,
             cpu_secs: 1.0,
@@ -4568,8 +4631,8 @@ mod tests {
         assert_eq!(col_at_widths(69, &area, &USERS_WIDTHS), None);
         assert_eq!(col_at_widths(71, &area, &USERS_WIDTHS), None);
         // selected layout has the contribution column at the front
-        assert_eq!(col_at_widths(6, &area, users_widths(true)), Some(0));
-        assert_eq!(col_at_widths(70, &area, users_widths(true)), None);
+        assert_eq!(col_at_widths(6, &area, &users_widths(70, true)), Some(0));
+        assert_eq!(col_at_widths(70, &area, &users_widths(70, true)), None);
     }
 
     #[test]

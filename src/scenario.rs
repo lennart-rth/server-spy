@@ -6,9 +6,8 @@
 //! stay unchanged.
 //!
 //! Filter changes still apply: only runs matching the current rules are
-//! tracked, and finished runs stay visible once recorded, exactly like in
-//! the real collector (see `collector::params_matches_rules` for the
-//! start-of-recording check).
+//! tracked, and finished runs are retained in full but shown only while they
+//! match the current filter (see `collector::params_matches_rules`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -316,8 +315,15 @@ impl Scenario {
             .collect();
         run_users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         let def = &self.spec.runs[r.def];
+        let comm = def
+            .params
+            .split_whitespace()
+            .next()
+            .unwrap_or("worker")
+            .to_string();
         RunRow {
             params: def.params.clone(),
+            comm,
             roots: vec![run_pid(r.def)],
             wall,
             cpu_secs: r.cpu_secs,
@@ -411,10 +417,16 @@ impl Scenario {
                 continue;
             }
             let def = &self.spec.runs[i];
+            let comm = def
+                .params
+                .split_whitespace()
+                .next()
+                .unwrap_or("worker")
+                .to_string();
             if self.t >= def.load.end {
                 self.passed.insert(i);
             } else if self.t >= def.load.start
-                && params_matches_rules(&def.params, &rules, &self.my_exe)
+                && params_matches_rules(&def.params, &comm, &rules, &self.my_exe)
             {
                 self.order += 1;
                 self.live.push(LiveRun {
@@ -653,9 +665,13 @@ impl Scenario {
             .collect();
         live_users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
 
-        // visible runs: every retained done run (they never vanish once
-        // recorded, matching the real collector) + live runs
-        let mut rows: Vec<RunRow> = self.done.clone();
+        // visible runs: retained done runs matching the filter + live runs
+        let mut rows: Vec<RunRow> = self
+            .done
+            .iter()
+            .filter(|r| params_matches_rules(&r.params, &r.comm, &rules, &self.my_exe))
+            .cloned()
+            .collect();
         for r in &self.live {
             rows.push(self.build_row(r, true));
         }
@@ -683,7 +699,13 @@ impl Scenario {
             self.history.pop_front();
         }
 
-        let conditions = build_conditions(&self.done, self.spec.cores);
+        let visible_done: Vec<RunRow> = self
+            .done
+            .iter()
+            .filter(|r| params_matches_rules(&r.params, &r.comm, &rules, &self.my_exe))
+            .cloned()
+            .collect();
+        let conditions = build_conditions(&visible_done, self.spec.cores);
 
         if let Some(shared) = &self.procs_shared {
             *shared.lock().unwrap() = self.synthetic_procs();
@@ -857,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_finalizes_runs_and_keeps_them_visible() {
+    fn scenario_finalizes_runs_and_retains_filtered_ones() {
         let mut s = scen();
         for _ in 0..30 {
             s.poll();
@@ -873,8 +895,7 @@ mod tests {
             assert!(r.cpu_secs > 0.0);
         }
         assert_eq!(snap.conditions.n, 2);
-        // narrowing the filter does not hide recorded done runs: they stay
-        // in the table and the statistics once they were tracked
+        // narrowing the filter hides the second run but keeps it retained
         s.control.set_rules(vec![Rule {
             pattern: "glove-100".into(),
             regex: true,
@@ -883,11 +904,11 @@ mod tests {
         let snap = s.poll();
         assert_eq!(
             snap.runs.iter().filter(|r| !r.alive).count(),
-            2,
-            "done runs stay visible under any filter"
+            1,
+            "non-matching done runs hidden"
         );
-        assert_eq!(snap.conditions.n, 2);
-        // widening the filter again keeps the same retained runs
+        assert_eq!(snap.conditions.n, 1);
+        // widening it again brings the retained run back
         s.control.set_rules(vec![Rule {
             pattern: "bench_ann".into(),
             regex: true,

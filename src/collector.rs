@@ -118,8 +118,15 @@ pub struct PsiPct {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRow {
     /// Full raw command line of the run's root process (or its comm when the
-    /// cmdline is empty). Shown in the runs table once the run is done.
+    /// cmdline is empty). Finished runs are re-checked against the filter
+    /// through this string and `comm`, so both must match whatever matched
+    /// while alive.
     pub params: String,
+    /// The actual /proc comm of the run's root process, captured while it
+    /// was alive. Re-checking finished runs against the filter uses this
+    /// real comm (not one derived from the params), so interpreter/renamed
+    /// processes whose comm differs from argv[0] keep matching.
+    pub comm: String,
     pub roots: Vec<i32>,
     pub wall: f64,
     pub cpu_secs: f64,
@@ -256,6 +263,7 @@ struct ActivePid {
 
 struct RunState {
     params: String,
+    comm: String,
     roots: HashSet<i32>,
     start: f64,
     last_seen: f64,
@@ -292,9 +300,10 @@ pub struct Collector {
     started: Instant,
     shared_procs: Option<Arc<Mutex<Vec<Process>>>>,
     scan_cache: procfs::ScanCache,
-    /// Cache key: (number of retained runs). Finished runs are retained in
-    /// full, so the conditions only change when a run is finalized.
-    conditions: Option<(usize, CondSummary)>,
+    /// Cache key: (number of retained runs, filter generation). Finished runs
+    /// are retained in full, so the conditions only change when a run is
+    /// finalized or the filter moves runs in/out of view.
+    conditions: Option<((usize, u64), CondSummary)>,
     /// Rolling window of the cores our run trees were actually scheduled on
     /// (core -> seq of the last poll where it was seen). Empty until a run
     /// exists; CPU values stay machine-wide then.
@@ -347,17 +356,25 @@ impl Collector {
 
     /// The conditions summary over all finalized runs, recomputed only when a
     /// run was finalized since the last poll (finalized rows are immutable).
-    /// Finished runs stay visible under any filter, so they always count
+    /// Conditions over the runs visible under the current filter: finished
+    /// runs are retained in full, but only the ones matching `rules` count
     /// toward the statistics (same rule as the runs table in the TUI).
-    fn cached_conditions(&mut self) -> CondSummary {
+    fn cached_conditions(&mut self, rules: &[Rule], my_exe: &str) -> CondSummary {
+        let key = (self.finalized.len(), self.generation);
         let stale = self
             .conditions
             .as_ref()
-            .map(|(n, _)| *n != self.finalized.len())
+            .map(|(k, _)| *k != key)
             .unwrap_or(true);
         if stale {
-            let c = crate::conditions::build_conditions(&self.finalized, self.sys.cores);
-            self.conditions = Some((self.finalized.len(), c.clone()));
+            let vis: Vec<RunRow> = self
+                .finalized
+                .iter()
+                .filter(|r| params_matches_rules(&r.params, &r.comm, rules, my_exe))
+                .cloned()
+                .collect();
+            let c = crate::conditions::build_conditions(&vis, self.sys.cores);
+            self.conditions = Some((key, c.clone()));
             c
         } else {
             self.conditions.as_ref().unwrap().1.clone()
@@ -592,8 +609,9 @@ impl Collector {
                     .map(|r| by_pid[r].start_secs)
                     .fold(f64::INFINITY, f64::min);
                 // Store the full raw command line (not the normalized key)
-                // so the runs table shows exactly what ran (interpreter
-                // names, paths, ...).
+                // and the real comm, so finished runs can be re-checked
+                // against the filter with the exact strings that matched
+                // while the process was alive.
                 let first_root = &by_pid[&new_roots[0]];
                 let params = if first_root.cmdline.is_empty() {
                     first_root.comm.clone()
@@ -605,6 +623,7 @@ impl Collector {
                     key.clone(),
                     RunState {
                         params,
+                        comm: first_root.comm.clone(),
                         roots: HashSet::new(),
                         start,
                         last_seen: now_wall,
@@ -735,10 +754,15 @@ impl Collector {
             }
         }
 
-        // Finished runs are retained in full and always shown: once a run
-        // was recorded under a filter it stays in the table, so completed
-        // experiments never vanish when the process exits.
-        let mut rows: Vec<RunRow> = self.finalized.clone();
+        // Finished runs are retained in full but only those matching the
+        // current filter are shown; runs recorded under an older filter that
+        // no longer match come back when the filter matches them again.
+        let mut rows: Vec<RunRow> = self
+            .finalized
+            .iter()
+            .filter(|r| params_matches_rules(&r.params, &r.comm, &rules, &self.my_exe))
+            .cloned()
+            .collect();
         for e in self.runs.values() {
             let wall = (now_wall - e.start).max(0.0);
             rows.push(build_row(e, wall, &psi, &self.sys));
@@ -938,7 +962,7 @@ impl Collector {
             live_ants,
             live_users,
             live_dt: dt,
-            conditions: self.cached_conditions(),
+            conditions: self.cached_conditions(&rules, &self.my_exe.clone()),
             collecting,
             cores: self.sys.cores,
             our_cores,
@@ -1002,6 +1026,7 @@ fn build_row(e: &RunState, wall: f64, psi: &PsiSet, sys: &SysInfo) -> RunRow {
         run_users.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
         RunRow {
             params: e.params.clone(),
+            comm: e.comm.clone(),
             roots: rootp,
             wall,
             cpu_secs,
@@ -1189,15 +1214,15 @@ pub(crate) fn matches_rules(p: &Process, rules: &[Rule], my_exe: &str) -> bool {
         .all(|r| !rule_matches(p, r, my_exe))
 }
 
-/// A synthetic process for a recorded run's params string, used to decide
-/// whether a run definition matches the current filter.
-fn params_process(params: &str) -> Process {
-    let mut words = params.split_whitespace();
-    let first = words.next().unwrap_or("worker");
+/// A synthetic process for a recorded run, used to decide whether it still
+/// matches the current rules. The comm is the run's real /proc comm
+/// (captured while alive), so interpreter/renamed processes whose comm
+/// differs from argv[0] keep matching their filter.
+fn params_process(params: &str, comm: &str) -> Process {
     Process {
         pid: -1,
         ppid: 0,
-        comm: basename(first),
+        comm: comm.to_string(),
         cmdline: params.split_whitespace().map(String::from).collect(),
         uid: 1000,
         ticks: 0,
@@ -1209,11 +1234,17 @@ fn params_process(params: &str) -> Process {
     }
 }
 
-/// Whether a recorded run's params string matches the current rules. Used by
-/// the demo scenario to decide which run definitions to record under the
-/// active filter (the live collector matches real processes instead).
-pub(crate) fn params_matches_rules(params: &str, rules: &[Rule], my_exe: &str) -> bool {
-    matches_rules(&params_process(params), rules, my_exe)
+/// Whether a recorded run (its raw params string and real comm) still
+/// matches the current rules. Used to decide which finished runs show in
+/// the TUI and the statistics: runs that no longer match are kept on disk
+/// but hidden until the filter matches them again.
+pub(crate) fn params_matches_rules(
+    params: &str,
+    comm: &str,
+    rules: &[Rule],
+    my_exe: &str,
+) -> bool {
+    matches_rules(&params_process(params, comm), rules, my_exe)
 }
 
 fn rule_matches(p: &Process, r: &Rule, my_exe: &str) -> bool {
@@ -1621,6 +1652,7 @@ mod tests {
         let mut col = Collector::new(Duration::from_secs(1), control, 100);
         let mut e = RunState {
             params: "old-filter".into(),
+            comm: "old".into(),
             roots: HashSet::from([42]),
             start: 0.0,
             last_seen: 10.0,
@@ -1646,6 +1678,7 @@ mod tests {
         col.finalized.push(build_row(
             &RunState {
                 params: "already-done".into(),
+                comm: "done".into(),
                 roots: HashSet::new(),
                 start: 0.0,
                 last_seen: 5.0,
@@ -1681,10 +1714,11 @@ mod tests {
         }];
         assert!(params_matches_rules(
             "bench_ann.py --M=16 --dataset=glove-100",
+            "python3.13",
             &rules,
             "server-spy"
         ));
-        assert!(!params_matches_rules("vim -c hello", &rules, "server-spy"));
+        assert!(!params_matches_rules("vim -c hello", "vim", &rules, "server-spy"));
         // exclude rules veto matching runs
         let rules = vec![
             Rule {
@@ -1698,14 +1732,45 @@ mod tests {
                 exclude: true,
             },
         ];
-        assert!(!params_matches_rules("bench_ann.py --index=ivf", &rules, "server-spy"));
+        assert!(!params_matches_rules(
+            "bench_ann.py --index=ivf",
+            "python3.13",
+            &rules,
+            "server-spy"
+        ));
         assert!(params_matches_rules(
             "bench_ann.py --index=hnsw",
+            "python3.13",
             &rules,
             "server-spy"
         ));
         // no include rule -> nothing matches
-        assert!(!params_matches_rules("bench_ann.py", &[], "server-spy"));
+        assert!(!params_matches_rules("bench_ann.py", "python3.13", &[], "server-spy"));
+    }
+
+    #[test]
+    fn params_matches_rules_uses_the_real_comm() {
+        // Interpreter processes: /proc comm ("python3.13") differs from the
+        // basename of argv[0] ("python3"), and a filter matching the comm
+        // (e.g. `python3\.13`) must keep matching the finished run — the
+        // params alone would not contain the version suffix.
+        let rules = vec![Rule {
+            pattern: "python3\\.13".into(),
+            regex: true,
+            exclude: false,
+        }];
+        let params = "/home/user/.nix-profile/bin/python3 /exp/bench_ann.py --M=16";
+        assert!(
+            params_matches_rules(params, "python3.13", &rules, "server-spy"),
+            "the real comm keeps interpreter-version filters matching"
+        );
+        // anchored filters that matched the live comm keep matching too
+        let rules = vec![Rule {
+            pattern: "^worker$".into(),
+            regex: true,
+            exclude: false,
+        }];
+        assert!(params_matches_rules("/exp/worker", "worker", &rules, "server-spy"));
     }
 
     #[test]
@@ -1761,6 +1826,7 @@ mod tests {
         let sys = SysInfo::detect();
         let mut e = RunState {
             params: "p".into(),
+            comm: "p".into(),
             roots: HashSet::new(),
             start: 0.0,
             last_seen: 1.0,

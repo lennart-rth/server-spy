@@ -258,6 +258,7 @@ mod tests {
     fn run(wall: f64, wait_pct: Option<f64>, cl: Option<f64>, psi: [f64; 3]) -> RunRow {
         RunRow {
             params: "bench_ann.py --index=hnsw".into(),
+            comm: "bench_ann.py".into(),
             roots: vec![],
             wall,
             cpu_secs: wall * 0.9,

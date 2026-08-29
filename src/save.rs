@@ -207,6 +207,11 @@ pub fn load_snapshot(path: &str) -> io::Result<Snapshot> {
                     order += 1;
                     runs.push(RunRow {
                         params: cells[0].clone(),
+                        comm: cells[0]
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("worker")
+                            .to_string(),
                         roots: Vec::new(),
                         wall: cell_f(&cells, 1),
                         cpu_secs: cell_f(&cells, 2),
@@ -543,6 +548,7 @@ mod tests {
         };
         s.runs.push(RunRow {
             params: "worker.py --algo=hnsw, v2".into(),
+            comm: "worker.py".into(),
             roots: vec![1, 2],
             wall: 120.5,
             cpu_secs: 95.25,
