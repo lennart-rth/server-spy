@@ -117,6 +117,8 @@ pub struct PsiPct {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRow {
+    /// Full raw command line of the run's root process (or its comm when the
+    /// cmdline is empty). Shown in the runs table once the run is done.
     pub params: String,
     pub roots: Vec<i32>,
     pub wall: f64,
@@ -290,10 +292,9 @@ pub struct Collector {
     started: Instant,
     shared_procs: Option<Arc<Mutex<Vec<Process>>>>,
     scan_cache: procfs::ScanCache,
-    /// Cache key: (number of retained runs, filter generation). Finished runs
-    /// are retained in full, so the conditions only change when a run is
-    /// finalized or the filter moves runs in/out of view.
-    conditions: Option<((usize, u64), CondSummary)>,
+    /// Cache key: (number of retained runs). Finished runs are retained in
+    /// full, so the conditions only change when a run is finalized.
+    conditions: Option<(usize, CondSummary)>,
     /// Rolling window of the cores our run trees were actually scheduled on
     /// (core -> seq of the last poll where it was seen). Empty until a run
     /// exists; CPU values stay machine-wide then.
@@ -346,25 +347,17 @@ impl Collector {
 
     /// The conditions summary over all finalized runs, recomputed only when a
     /// run was finalized since the last poll (finalized rows are immutable).
-    /// Conditions over the runs visible under the current filter. Finished
-    /// runs are retained in full, but only the ones matching `rules` count
+    /// Finished runs stay visible under any filter, so they always count
     /// toward the statistics (same rule as the runs table in the TUI).
-    fn cached_conditions(&mut self, rules: &[Rule], my_exe: &str) -> CondSummary {
-        let key = (self.finalized.len(), self.generation);
+    fn cached_conditions(&mut self) -> CondSummary {
         let stale = self
             .conditions
             .as_ref()
-            .map(|(k, _)| *k != key)
+            .map(|(n, _)| *n != self.finalized.len())
             .unwrap_or(true);
         if stale {
-            let vis: Vec<RunRow> = self
-                .finalized
-                .iter()
-                .filter(|r| params_matches_rules(&r.params, rules, my_exe))
-                .cloned()
-                .collect();
-            let c = crate::conditions::build_conditions(&vis, self.sys.cores);
-            self.conditions = Some((key, c.clone()));
+            let c = crate::conditions::build_conditions(&self.finalized, self.sys.cores);
+            self.conditions = Some((self.finalized.len(), c.clone()));
             c
         } else {
             self.conditions.as_ref().unwrap().1.clone()
@@ -598,11 +591,20 @@ impl Collector {
                     .iter()
                     .map(|r| by_pid[r].start_secs)
                     .fold(f64::INFINITY, f64::min);
+                // Store the full raw command line (not the normalized key)
+                // so the runs table shows exactly what ran (interpreter
+                // names, paths, ...).
+                let first_root = &by_pid[&new_roots[0]];
+                let params = if first_root.cmdline.is_empty() {
+                    first_root.comm.clone()
+                } else {
+                    first_root.cmdline.join(" ")
+                };
                 self.run_order += 1;
                 self.runs.insert(
                     key.clone(),
                     RunState {
-                        params: key.clone(),
+                        params,
                         roots: HashSet::new(),
                         start,
                         last_seen: now_wall,
@@ -733,15 +735,10 @@ impl Collector {
             }
         }
 
-        // Finished runs are retained in full but only those matching the
-        // current filter are shown; runs recorded under an older filter that
-        // no longer match come back when the filter matches them again.
-        let mut rows: Vec<RunRow> = self
-            .finalized
-            .iter()
-            .filter(|r| params_matches_rules(&r.params, &rules, &self.my_exe))
-            .cloned()
-            .collect();
+        // Finished runs are retained in full and always shown: once a run
+        // was recorded under a filter it stays in the table, so completed
+        // experiments never vanish when the process exits.
+        let mut rows: Vec<RunRow> = self.finalized.clone();
         for e in self.runs.values() {
             let wall = (now_wall - e.start).max(0.0);
             rows.push(build_row(e, wall, &psi, &self.sys));
@@ -941,7 +938,7 @@ impl Collector {
             live_ants,
             live_users,
             live_dt: dt,
-            conditions: self.cached_conditions(&rules, &self.my_exe.clone()),
+            conditions: self.cached_conditions(),
             collecting,
             cores: self.sys.cores,
             our_cores,
@@ -1192,8 +1189,8 @@ pub(crate) fn matches_rules(p: &Process, rules: &[Rule], my_exe: &str) -> bool {
         .all(|r| !rule_matches(p, r, my_exe))
 }
 
-/// A synthetic process for a recorded run's params string, used to re-check
-/// finished runs against the current filter (the original pids are gone).
+/// A synthetic process for a recorded run's params string, used to decide
+/// whether a run definition matches the current filter.
 fn params_process(params: &str) -> Process {
     let mut words = params.split_whitespace();
     let first = words.next().unwrap_or("worker");
@@ -1212,10 +1209,9 @@ fn params_process(params: &str) -> Process {
     }
 }
 
-/// Whether a recorded run's params still match the current rules. Used to
-/// decide which finished runs show in the TUI and the statistics: runs that
-/// no longer match are kept on disk but hidden until the filter matches
-/// them again.
+/// Whether a recorded run's params string matches the current rules. Used by
+/// the demo scenario to decide which run definitions to record under the
+/// active filter (the live collector matches real processes instead).
 pub(crate) fn params_matches_rules(params: &str, rules: &[Rule], my_exe: &str) -> bool {
     matches_rules(&params_process(params), rules, my_exe)
 }
