@@ -1,6 +1,6 @@
 <img src="https://img.shields.io/crates/v/server-spy" alt="crates.io version"> <img src="https://img.shields.io/github/v/release/lennart-rth/server-spy" alt="GitHub release"> <img src="https://img.shields.io/github/actions/workflow/status/lennart-rth/server-spy/ci.yml?label=ci" alt="CI status"> <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="license">
 
-# Server-Spy
+# [Server-Spy](https://lennart-rth.github.io/server-spy/)
 *"If you can't beat them, join them"*
 
 Measure how much resources your experiment actually gets, and who is stealing it from you.
